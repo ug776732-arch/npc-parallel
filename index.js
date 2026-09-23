@@ -13,8 +13,8 @@
 //   - 在场判定：生成前用一次轻量请求判断谁在场景里，在场的本轮跳过
 //   - 批量生成：本轮所有 NPC 合并为一次调用，解析缺失才回退逐个补生成
 //   - 双生成通道：酒馆主API（跟随酒馆当前连接）或自定义 OpenAI 兼容端点
-//   - 常驻世界书：多选世界书注入设定，条目级开关 / 试算命中 / 预览注入文本
-//   - 数据库联动：从绑定世界书的「重要人物表」同步名单，并自动录入新出场人物
+//   - 世界书 · 数据库（同一页）：① 绑定并读取世界书里的人物档案条目 → 进「待审核」队列
+//                                ② 常驻世界书多选注入设定，条目级开关 / 试算命中 / 预览注入文本
 //   - 平行视角管理页：任意楼层任意 NPC 的 查看 / 修改 / 重新生成 / 删除
 //   - 运行日志：面板内最近 300 条（成功耗时 / 字数 / 失败原因），可复制、导出
 //
@@ -34,8 +34,10 @@
 //
 // 【来源说明】
 //   本扩展全部代码与界面文案由本项目自行编写，未复制任何第三方扩展的源码或文案；
-//   与世界书、其它扩展的数据互操作属于格式兼容。界面视觉参数见 style.css 顶部的
-//   设计令牌（尺寸 / 圆角 / 阴影 / 遮罩 / 字体栈均为本项目自行推导）。
+//   与世界书、其它扩展的数据互操作属于格式兼容 —— 读取人物档案类条目时按「表格结构 /
+//   键值对」通用解析，列名取自条目数据本身（表头行或键名），代码内不内置任何扩展的
+//   字段名清单。界面视觉参数见 style.css 顶部的设计令牌（尺寸 / 圆角 / 阴影 / 遮罩 /
+//   字体栈均为本项目自行推导）。
 // ==========================================================================
 import {
     event_types,
@@ -3144,51 +3146,89 @@ async function loadWorldBookEntries(bookName) {
     } catch { return null; }
 }
 
+// 读取「人物档案」类世界书条目：按表格结构 / 键值对通用解析。
+// 设计原则：① 列名一律取自数据本身（表头行或键名），代码里不内置任何第三方字段名清单；
+//          ② 表格文本与「键：值」文本都能读；③ 姓名必需，其余内容整体作为设定摘要。
 function parseImportantPersons(entries, entryPrefix) {
     if (!entries) return [];
     const persons = [];
-    const prefix = entryPrefix || '重要人物表';
+    const prefix = String(entryPrefix || '').trim();
     for (const uid in entries) {
         const e = entries[uid];
         if (!e || e.disable) continue;
         const comment = String(e.comment || '');
-        const keys = Array.isArray(e.key) ? e.key : [];
-        const content = String(e.content || '');
-        if (!comment.includes(prefix) && !comment.includes('重要人物')) continue;
-        if (comment.includes('索引')) continue;
-        const person = parseImportantPersonEntry(content, keys);
+        if (prefix && !comment.includes(prefix)) continue;   // 认「条目前缀」（可在设置里改）
+        if (comment.includes('索引')) continue;              // 索引类条目不含档案正文
+        const person = parseProfileEntry(String(e.content || ''), Array.isArray(e.key) ? e.key : []);
         if (person && person.name) persons.push(person);
     }
     return persons;
 }
 
-function parseImportantPersonEntry(content, keys) {
+// 解析单个条目 → { name, intro, notes }
+function parseProfileEntry(content, entryKeys) {
     if (!content) return null;
-    const person = { name: '', gender: '', intro: '', appearance: '', items: '', isAbsent: '', experience: '' };
-    if (keys && keys.length) person.name = String(keys[0] || '').trim();
-    const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const lines = String(content).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+    // ① 表格文本：可能第一行是表头（短标签 + 后面出现长内容行 → 判为表头）
+    const rows = [];
     for (const line of lines) {
         if (line.startsWith('|') && line.endsWith('|')) {
             const cells = line.slice(1, -1).split('|').map(s => s.trim());
-            if (cells.length >= 7) {
-                if (!person.name && cells[0]) person.name = cells[0];
-                person.gender = cells[1] || '';
-                person.intro = cells[2] || '';
-                person.appearance = cells[3] || '';
-                person.items = cells[4] || '';
-                person.isAbsent = cells[5] || '';
-                person.experience = cells[6] || '';
-                break;
-            }
-        }
-        const kv = line.match(/^(姓名|性别\/年龄|一句话介绍|外貌特征|持有的重要物品|是否离场|过往经历)[:：]\s*(.+)$/);
-        if (kv) {
-            const map = { '姓名': 'name', '性别/年龄': 'gender', '一句话介绍': 'intro', '外貌特征': 'appearance', '持有的重要物品': 'items', '是否离场': 'isAbsent', '过往经历': 'experience' };
-            if (map[kv[1]] && !person[map[kv[1]]]) person[map[kv[1]]] = kv[2];
+            if (cells.length >= 2) rows.push(cells);
         }
     }
-    if (!person.name && lines.length) person.name = lines[0].replace(/^[|\s]+/, '').split(/[|：:]/)[0]?.trim() || '';
-    return person.name ? person : null;
+    let header = null;
+    let dataRow = rows[0];
+    if (rows.length >= 2) {
+        const keyName = String((entryKeys && entryKeys[0]) || '').trim();
+        const first = rows[0];
+        const rest = rows.slice(1);
+        const shortAll = first.every(c => !c || c.length <= 10);
+        const maxLen = r => r.reduce((m, c) => Math.max(m, c.length), 0);
+        // 信号①：条目键（角色名）出现在后续行、却不在首行 → 首行是表头
+        const keyInRest = !!keyName && !first.includes(keyName) && rest.some(r => r.includes(keyName));
+        // 信号②：首行每格都短，且后面每一行的最长格都更长 → 首行是表头
+        const wider = rest.every(r => r.length === first.length && maxLen(r) > maxLen(first));
+        if (shortAll && (keyInRest || wider)) header = first;
+        dataRow = (keyName && rest.find(r => r.includes(keyName))) || rest[0];
+    }
+    const cells = header ? dataRow : rows[0];
+
+    let name = String((entryKeys && entryKeys[0]) || '').trim();
+    if (!name && cells && cells[0]) name = cells[0];
+
+    let summary = '';
+    if (cells && cells.length) {
+        const start = (cells[0] && cells[0] === name) ? 1 : 0;   // 姓名列不重复写
+        const parts = [];
+        for (let i = start; i < cells.length; i++) {
+            const v = cells[i];
+            if (!v) continue;
+            const label = (header && header[i] && header[i] !== v) ? header[i] : '';
+            parts.push(label ? label + '：' + v : v);
+        }
+        summary = parts.join('\n');
+    }
+
+    // ② 「键：值」文本（键名同样取自数据）
+    if (!summary) {
+        const parts = [];
+        for (const line of lines) {
+            const m = line.match(/^([^:：]{1,16})[:：]\s*(.+)$/);
+            if (!m) continue;
+            const label = m[1].trim(), v = m[2].trim();
+            if (!v) continue;
+            if (/^(姓名|名字|名称|人名)$/.test(label)) { if (!name) name = v; continue; }
+            parts.push(label + '：' + v);
+        }
+        summary = parts.join('\n');
+    }
+
+    if (!name && lines.length) name = lines[0].replace(/^[|\s]+/, '').split(/[|：:]/)[0]?.trim() || '';
+    if (!name) return null;
+    const notes = summary.length > 300 ? summary.slice(0, 300) + '…' : summary;
+    return { name, intro: '', notes };
 }
 
 // 同步人物 = 读世界书「重要人物表」 + 调用API识别近期剧情中的重要人物
@@ -3309,111 +3349,6 @@ function isSelfName(name) {
     return false;
 }
 
-// ------------------------------ LLM 自动录入重要人物 ------------------------------
-// 正文结束后，用 LLM 从正文中识别「重要人物」，自动补进 NPC 名单
-// （数据库联动负责从世界书读权威档案；这里是兜底：正文中新登场、尚未入册的人物）
-
-function buildDiscoverPrompt(names, mainText, limit, selfNames) {
-    const trim = mainText.length > 3000 ? '（……前略……）' + mainText.slice(-3000) : mainText;
-    const selfList = (selfNames && selfNames.length) ? selfNames.join('、') : '（未知）';
-    const parts = [];
-    parts.push('[重要人物识别任务] 以下是本轮主正文。请找出其中"真实登场"的重要人物（有名字、有戏份的配角；不要列出泛称如"路人""士兵""掌柜甲"）。');
-    parts.push('');
-    parts.push('⚠️ 严禁列出主角与用户扮演的角色，这些不算NPC。需要排除的名字：' + selfList);
-    parts.push('⚠️ 也不要列出"我""你""他""她""大家"等代称，不要列出已存在名单中的名字。');
-    parts.push('');
-    parts.push('已有名单（不要重复列出）：' + (names.length ? names.join('、') : '（空）'));
-    parts.push('');
-    parts.push('【主正文】');
-    parts.push(trim);
-    parts.push('');
-    parts.push('【输出格式】每行一个名字，只输出名字本身，不要编号、不要解释。若没有新人物，输出"无"。最多 ' + limit + ' 个。');
-    return parts.join('\n');
-}
-
-function parseDiscoveredNames(raw, existing, limit) {
-    const out = [];
-    for (const line of String(raw || '').split(/\r?\n/)) {
-        let n = line.trim()
-            .replace(/^[\s\-\*•·\d.、)）\]\[]+/, '')
-            .replace(/[（(].*?[)）]/g, '')
-            .replace(/[：:，,。.;；"'“”‘’]/g, '')
-            .trim();
-        if (!n || n.length > 20) continue;
-        if (/^(无|没有|none|null)$/i.test(n)) continue;
-        if (isSelfName(n)) continue;              // 排除主角/用户/代称
-        if (/(主角|玩家|用户|旁白|叙事者|系统)$/.test(n)) continue;
-        if (existing.has(n)) continue;
-        if (out.includes(n)) continue;
-        out.push(n);
-        if (out.length >= limit) break;
-    }
-    return out;
-}
-
-// 发现并录入新 NPC；返回新增名字数组
-async function autoDiscoverNpcs(mainText, signal) {
-    const s = settings();
-    if (!s.autoDetectPresence) return [];
-    if (!String(mainText || '').trim()) return [];
-    const limit = Math.max(1, num(s.discoverLimit, 5, 1, 20));
-    const existing = new Set((s.npcs || []).map(n => (n.name || '').trim()).filter(Boolean));
-    const selfNames = [...getSelfNames()];
-    const prompt = buildDiscoverPrompt([...existing], mainText, limit, selfNames);
-    let raw = '';
-    try {
-        raw = await llmGenerate(prompt, 300, '重要人物识别', signal);
-    } catch (e) {
-        if (isAbortError(e)) throw e;
-        addLog('warn', `重要人物识别失败（跳过自动录入）：${e?.message || e}`);
-        return [];
-    }
-    const found = parseDiscoveredNames(raw, existing, limit);
-    if (!found.length) return [];
-    // 尝试从世界书补齐这些新人的档案信息
-    const profiles = await lookupPersonProfiles(found);
-    for (const name of found) {
-        const p = profiles[name];
-        const notes = p
-            ? [p.gender && `性别/年龄：${p.gender}`, p.intro && `简介：${p.intro}`, p.appearance && `外貌：${p.appearance}`, p.items && `物品：${p.items}`, p.experience && `经历：${p.experience}`].filter(Boolean).join('\n')
-            : '';
-        s.npcs.push({ name, pov: '', notes, always: false });
-    }
-    saveSettingsDebounced();
-    renderNpcRows();
-    addLog('ok', `LLM 自动录入重要人物 ${found.length} 名：${found.join('、')}`);
-    if (s.notify) toastr.info(`已自动录入重要人物：${found.join('、')}`, '众生侧写');
-    return found;
-}
-
-// 从绑定的世界书里查这些名字的档案（数据库已写入）
-async function lookupPersonProfiles(names) {
-    const map = {};
-    if (!names || !names.length) return map;
-    try {
-        const books = await getCharLorebooks();
-        const allBooks = [books.primary, books.secondary, ...books.additional].filter(Boolean);
-        for (const bookName of allBooks) {
-            const entries = await loadWorldBookEntries(bookName);
-            if (!entries) continue;
-            for (const uid in entries) {
-                const e = entries[uid];
-                if (!e || e.disable) continue;
-                const keys = Array.isArray(e.key) ? e.key : [];
-                const comment = String(e.comment || '');
-                const hay = [...keys, comment].join(' ');
-                for (const n of names) {
-                    if (map[n]) continue;
-                    if (hay.includes(n)) {
-                        const p = parseImportantPersonEntry(String(e.content || ''), keys);
-                        if (p) map[n] = p;
-                    }
-                }
-            }
-        }
-    } catch (e) { console.warn('[npc-parallel] 查询人物档案失败', e); }
-    return map;
-}
 // ------------------------------ 单轮重生成 / 删除 ------------------------------
 
 // 从消息里移除指定 NPC 的折叠块，并同步 message.extra
@@ -3792,7 +3727,7 @@ function addSettingsUI() {
 const PANEL_TABS = [
     { id: 'general', icon: 'fa-sliders', label: '通用' },
     { id: 'api', icon: 'fa-plug', label: 'API' },
-    { id: 'worldinfo', icon: 'fa-book', label: '世界书' },
+    { id: 'worldinfo', icon: 'fa-book', label: '世界书 · 数据库' },
     { id: 'npcs', icon: 'fa-users', label: 'NPC名单' },
     { id: 'pov', icon: 'fa-book-open', label: '平行视角' },
     { id: 'logs', icon: 'fa-scroll', label: '日志' },
@@ -4324,10 +4259,10 @@ function buildPanelTabs() {
         $paneMap[tab].append($el);
     });
 
-    // 4) 各页专属内容（世界书 / 平行视角 / NPC 名单）
-    $paneMap.worldinfo.append(WI_PANE_HTML);      // 常驻世界书
+    // 4) 各页专属内容（世界书 · 数据库 / 平行视角 / NPC 名单）
+    $paneMap.worldinfo.append(DB_PANE_HTML);   // 世界书绑定 + 数据库联动
+    $paneMap.worldinfo.append(WI_PANE_HTML);   // 常驻世界书注入
     $paneMap.pov.append(POV_PANE_HTML);   // 平行视角管理栏
-    $paneMap.npcs.append(DB_PANE_HTML);
 
     // 5) 组装并绑定
     $body.empty().append($tabs).append($wrap);
@@ -4618,10 +4553,10 @@ function injectExtensionsEntry() {
     $('#npcp_ext_open').on('click', openPanel);
 }
 
-// 数据库联动设置组（注入到 NPC名单 页）
+// 世界书 · 数据库（同一页：先定「从哪本书读」，再定同步方式，最后是注入）
 const DB_PANE_HTML = `
     <div class="npcp-group">
-        <b>📚 世界书绑定</b>
+        <b>🔗 世界书绑定（从哪本书读）</b>
         <label>绑定方式
             <select id="npcp_wb_mode" class="text_pole">
                 <option value="char">跟随角色卡绑定的世界书（推荐）</option>
@@ -4635,26 +4570,26 @@ const DB_PANE_HTML = `
         </label>
         <div class="npcp-buttons">
             <div class="menu_button" id="npcp_wb_refresh"><i class="fa-solid fa-rotate"></i><span>重载书单</span></div>
-            <div class="menu_button" id="npcp_db_sync2"><i class="fa-solid fa-database"></i><span>立即同步人物</span></div>
         </div>
-        <small class="npcp-hint">「立即同步人物」= 读取绑定世界书里的「重要人物表」 <b>+ 调用API</b> 从近期剧情中识别重要人物，一并录入下方 NPC 名单（自动排除主角/用户角色，不覆盖同名已有配置）。</small>
         <div class="npcp-status" id="npcp_db_status"></div>
     </div>
     <div class="npcp-group">
-        <b>🗄 数据库联动</b>
+        <b>🗄 数据库联动（从世界书同步人物档案）</b>
+        <label>数据库条目名称前缀
+            <input id="npcp_db_entry" class="text_pole" type="text" placeholder="重要人物表">
+        </label>
         <label class="checkbox_label" for="npcp_auto_sync_db">
             <input id="npcp_auto_sync_db" type="checkbox"><span>每轮自动从世界书同步「重要人物表」</span>
         </label>
         <label class="checkbox_label" for="npcp_auto_presence">
             <input id="npcp_auto_presence" type="checkbox"><span>正文结束后自动识别在场/离场人物</span>
         </label>
-        <label>数据库条目名称前缀
-            <input id="npcp_db_entry" class="text_pole" type="text" placeholder="重要人物表">
-        </label>
         <div class="npcp-buttons">
-            <div class="menu_button" id="npcp_db_sync3"><i class="fa-solid fa-database"></i><span>同步（仅读世界书，不调用API）</span></div>
+            <div class="menu_button" id="npcp_db_sync2"><i class="fa-solid fa-database"></i><span>立即同步人物（读世界书 + 调API识别）</span></div>
+            <div class="menu_button" id="npcp_db_sync3"><i class="fa-solid fa-book-open"></i><span>仅读世界书同步（不调API）</span></div>
         </div>
-        <small class="npcp-hint">世界书条目匹配规则：条目标题/注释包含上方前缀，且不含「索引」二字。不同版本的数据库导出的表名可能不同，按实际情况修改。</small>
+        <small class="npcp-hint">匹配规则：条目标题/注释包含上方前缀、且不含「索引」二字。存档表格可以带表头（列名从表头读）也可以是「键：值」文本，<b>不限定某个扩展的导出格式</b>。<br>
+        同步到的人物一律先进「待审核人物」队列，勾选确认后才加入名单。</small>
     </div>
 `;
 
