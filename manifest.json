@@ -1,0 +1,12 @@
+{
+    "display_name": "众生侧写",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "ZCode",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false
+}
