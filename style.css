@@ -1077,6 +1077,44 @@ dialog.npcp-review-dlg::backdrop { background: rgba(0, 0, 0, 0.54); }
     .npcp-pov-body { max-height: 240px; }
 }
 
+/* ============================ 从世界书导入 NPC（选条目列表） ============================ */
+.npcp-imp-list {
+    display: flex; flex-direction: column; gap: 2px;
+    border: 1px solid var(--npcp-line); border-radius: var(--npcp-radius-sm);
+    background: var(--npcp-bg-2); padding: 5px;
+}
+.npcp-imp-row {
+    display: flex; flex-direction: row; align-items: center; gap: 7px;
+    padding: 5px 7px; min-height: 30px;
+    border-radius: var(--npcp-radius-xs); border: 1px solid transparent;
+    cursor: pointer;
+    transition: background var(--npcp-dur-fast) var(--npcp-ease), border-color var(--npcp-dur-fast) var(--npcp-ease);
+}
+.npcp-imp-row:hover { background: var(--npcp-accent-soft); }
+.npcp-imp-row.on { background: var(--npcp-accent-soft); border-color: var(--npcp-accent-glow); }
+.npcp-imp-row.no-name { opacity: 0.5; cursor: default; }
+.npcp-imp-row input[type="checkbox"] { flex: 0 0 auto; }
+.npcp-imp-title {
+    flex: 1 1 auto; min-width: 0; font-size: 0.85em; color: var(--npcp-on);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.npcp-imp-row.on .npcp-imp-title { color: var(--npcp-accent); font-weight: 600; }
+.npcp-imp-book { flex: 0 0 auto; font-size: 0.72em; color: var(--npcp-sub); }
+.npcp-imp-to { flex: 0 0 auto; font-size: 0.78em; color: var(--npcp-accent); white-space: nowrap; }
+.npcp-imp-to.warn { color: var(--npcp-sub); }
+.npcp-imp-more {
+    padding: 6px 10px; text-align: center; cursor: pointer;
+    font-size: 0.78em; color: var(--npcp-accent);
+    background: var(--npcp-accent-soft); border-radius: var(--npcp-radius-xs);
+}
+.npcp-imp-more:hover { background: var(--npcp-accent); color: #fff; }
+.npcp-group .menu_button.npcp-imp-run,
+.menu_button.npcp-imp-run {
+    background: var(--npcp-accent, #7c6bf0) !important;
+    border-color: var(--npcp-accent, #7c6bf0) !important;
+    color: #fff !important; font-weight: 600;
+}
+
 /* ============================ 世界书界面紧凑化 ============================ */
 /* ① 修 bug：.npcp-wi-row 是 <label>，被 .npcp-group label{flex-direction:column} 覆盖，
       导致"复选框在上、书名在下、居中、行高巨大"（70 本书直接铺满屏）。

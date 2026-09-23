@@ -13,7 +13,7 @@
 //   - 在场判定：生成前用一次轻量请求判断谁在场景里，在场的本轮跳过
 //   - 批量生成：本轮所有 NPC 合并为一次调用，解析缺失才回退逐个补生成
 //   - 双生成通道：酒馆主API（跟随酒馆当前连接）或自定义 OpenAI 兼容端点
-//   - 世界书 · 数据库（同一页）：① 绑定并读取世界书里的人物档案条目 → 进「待审核」队列
+//   - NPC · 世界书（同一页）：① 三种添加方式：手动 / 调用API识别人物 / 从世界书条目直接导入 → 进「待审核」队列
 //                                ② 常驻世界书多选注入设定，条目级开关 / 试算命中 / 预览注入文本
 //   - 平行视角管理页：任意楼层任意 NPC 的 查看 / 修改 / 重新生成 / 删除
 //   - 运行日志：面板内最近 300 条（成功耗时 / 字数 / 失败原因），可复制、导出
@@ -214,8 +214,8 @@ const DEFAULTS = {
  // 新增
     minGenTokens: 3000,         // 正文 token 防护：低于此值不生成平行视角和记忆（防道歉/审核）
     autoDetectPresence: true,   // 自动入场检测：正文结束后自动识别在场/离场人物
-    autoSyncDatabase: true,     // 自动同步：从世界书数据库「重要人物表」同步 NPC 名单
-    dbWorldEntryName: '重要人物表', // 数据库在世界书中的条目名前缀
+    autoSyncDatabase: true,     // 自动同步：每轮按「条目名称前缀」从世界书同步人物（只读世界书、不调API）
+    dbWorldEntryName: '重要人物表', // 世界书里「人物档案」类条目的名称前缀（默认值兼容整表导出人物档案的条目）
     activeTab: 'general',       // 当前悬浮窗激活的选项卡
     discoverLimit: 5,           // 每轮最多自动录入多少个新人物
     lightEndpoint: '',          // 轻量任务（在场判定/人物识别/记忆压缩）专用的API端点名，空=跟随主池
@@ -1890,10 +1890,10 @@ function renderWorldbookOptions() {
     $sel.append($('<option>', { value: '' }).text(names.length ? '— 请选择世界书（共 ' + names.length + ' 本）—' : '（未读取到世界书，请先点「重载书单」）'));
     names.forEach(n => $sel.append($('<option>', { value: n }).text(n)));
     if (cur && names.includes(cur)) $sel.val(cur);
-    // 同时在「数据库联动」区域显示当前生效的世界书（便于确认绑定是否正确）
+    // 同时在「从世界书导入」区域显示当前生效的世界书（便于确认绑定是否正确）
     try {
         const t = getTargetBooks();
-        const $st = $('#npcp_db_status');
+        const $st = $('#npcp_imp_status');
         if ($st.length && !$st.text()) {
             $st.text('当前生效：' + (t.source || '未绑定') + (t.books.length ? '《' + t.books.join('》《') + '》' : ''));
         }
@@ -1910,9 +1910,17 @@ function setProgress(text) {
     try { $('#npcp_status').text(t); } catch (e) { /* ignore */ }
 }
 
-function setDbStatus(text) {
+// 面板内结果行：世界书相关结果写「从世界书导入」区，API 识别结果写「添加NPC」区。
+// （面板用 showModal 渲染在浏览器顶层，toastr 会被遮住，所以关键结果必须有面板内显示）
+function setImportStatus(text) {
     const t = String(text || '');
-    try { $('#npcp_db_status').text(t); } catch (e) { /* ignore */ }
+    try { $('#npcp_imp_status').text(t); } catch (e) { /* ignore */ }
+    setStatus(t.split('\n')[0]);
+}
+
+function setAddStatus(text) {
+    const t = String(text || '');
+    try { $('#npcp_add_status').text(t); } catch (e) { /* ignore */ }
     setStatus(t.split('\n')[0]);
 }
 
@@ -2022,27 +2030,27 @@ async function runGeneration(filterNames) {
         return;
     }
 
- // 提前进入"运行中"状态——数据库同步与人物识别阶段同样可被「停止」中断
+ // 提前进入"运行中"状态——世界书同步与人物识别阶段同样可被「停止」中断
     isRunning = true;
     cancelRequested = false;
     activeAbort = new AbortController();
     syncRunButton();
 
- // 从世界书「数据库」重要人物表自动同步角色（实现自动入场）
- // 自动同步【只读世界书、不调用 API】以节省额度；
-    //           需要让 API 识别人物时，请手点「立即同步人物」按钮（那条路径才走 LLM）。
+ // 每轮按「条目名称前缀」从世界书把人物同步进待审核队列（实现人物自动入场）
+ // 这一步【只读世界书、不调用 API】以节省额度；未绑定世界书时自动跳过。
+    //           需要让模型识别人物时，请手点「调用API识别添加NPC」按钮（那条路径才走 LLM）。
     if (s.autoSyncDatabase) {
         try {
-            const r = await syncFromDatabase({ useLLM: false });
+            const r = await syncNpcSources({ useLLM: false });
             if (r.added > 0) {
-                addLog('info', `数据库同步：新增 ${r.added} 名角色到NPC名单`);
+                addLog('info', `世界书同步：新增 ${r.added} 名角色到NPC名单`);
                 renderNpcRows();
-                if (s.notify) toastr.info(`已从数据库同步 ${r.added} 名重要人物`);
+                if (s.notify) toastr.info(`已从世界书同步 ${r.added} 名人物`);
             } else if (r.error) {
-                addLog('info', `数据库同步：${r.error}`);
+                addLog('info', `世界书同步：${r.error}`);
             }
         } catch (e) {
-            addLog('warn', `数据库同步失败：${e?.message || e}`);
+            addLog('warn', `世界书同步失败：${e?.message || e}`);
         }
     }
 
@@ -2257,8 +2265,8 @@ async function clearBlocks() {
     toastr.success('已清除最后一条AI回复的平行视角块');
 }
 
-// ------------------------------ 世界书数据库联动 ------------------------------
-// 读取角色卡绑定的世界书，解析「数据库」插件写入的重要人物表
+// ------------------------------ 世界书人物档案读取 ------------------------------
+// 读「世界书绑定」决定的书；条目里的人物档案支持表格（列名从表头读）与「键：值」两种写法
 
 // ------------------------------ NPC 候选审核 ------------------------------
 // 规则：识别到的人物不再自动进名单，一律进入"待审核队列"，弹窗勾选后才加入。
@@ -3231,9 +3239,10 @@ function parseProfileEntry(content, entryKeys) {
     return { name, intro: '', notes };
 }
 
-// 同步人物 = 读世界书「重要人物表」 + 调用API识别近期剧情中的重要人物
+// 同步人物 = 读世界书（按「条目名称前缀」筛出人物档案条目） + 调用API识别近期剧情中的重要人物
+// useLLM=false 时只读世界书（不调 API）；未绑定世界书时自动跳过世界书那一步，不影响 API 识别。
 // 返回 { added, skipped, updated, books, source, llm, error, names, detail }
-async function syncFromDatabase(opts = {}) {
+async function syncNpcSources(opts = {}) {
     const s = settings();
     const useLLM = opts.useLLM !== false;
     const limit = Math.max(1, num(s.discoverLimit, 5, 1, 20));
@@ -3262,7 +3271,7 @@ async function syncFromDatabase(opts = {}) {
             report.detail.push(`《${bookName}》：读到 ${persons.length} 人，待审核 ${q.length} 人`);
         }
     } else {
-        report.detail.push('未找到可用的世界书（请检查「世界书绑定」设置）');
+        report.detail.push('未绑定世界书，已自动跳过世界书步骤');
     }
 
     // ---------- ② 调用 API 识别（候选同样进入待审核队列）----------
@@ -3305,6 +3314,132 @@ function formatSyncReport(r) {
     const detail = (r.detail && r.detail.length) ? r.detail.join(' ｜ ') : '';
     const err = r.error ? '⚠️ ' + r.error : '';
     return [head, src, llm, detail, err].filter(Boolean).join('\n');
+}
+
+// ------------------------------ 从世界书条目导入 NPC ------------------------------
+// 用途：把世界书条目里「已经写好的人物」直接导入成 NPC，全程不调用 API。
+// 名字取条目的关键词（没填关键词时取表格首格 / 首行），条目正文整体作为该 NPC 的备注。
+
+const IMP_PAGE = 80;                 // 列表每次显示条数（条目多时靠搜索 + 「显示更多」）
+let impEntries = [];                 // 当前列出的候选条目
+let impCacheKey = null;              // 对应的「书单」；变化时重新收集
+let impLimit = IMP_PAGE;
+const impPicked = new Set();         // 已勾选的候选下标（重排列表不丢选择）
+
+// 读出「世界书绑定」决定的书里的所有可用条目（禁用条目 / 索引类条目跳过）
+async function collectImportEntries(force) {
+    const books = getTargetBooks().books;
+    const out = [];
+    for (const book of books) {
+        const entries = await getBookEntriesCached(book, force);
+        if (!entries) continue;
+        for (const uid in entries) {
+            const e = entries[uid] || {};
+            if (e.disable) continue;                       // 酒馆里已禁用的条目
+            const label = String(e.comment || '').trim();
+            if (label.includes('索引')) continue;           // 索引类条目不含人物档案
+            const keys = Array.isArray(e.key) ? e.key : [];
+            const content = String(e.content || '');
+            const p = parseProfileEntry(content, keys);
+            out.push({
+                book, uid,
+                label: label || keys.slice(0, 3).join('、') || '(无标题)',
+                keys, len: content.length,
+                name: (p && p.name) || '',
+                notes: (p && p.notes) || '',
+            });
+        }
+    }
+    out.sort((a, b) => a.label.localeCompare(b.label, 'zh'));
+    return out;
+}
+
+function updateImportRunLabel() {
+    const n = impPicked.size;
+    try { $('#npcp_imp_run span').text(n ? '导入所选人物（' + n + '）' : '导入所选人物'); } catch (e) { /* ignore */ }
+}
+
+// 渲染条目选择列表：reload=true 重新读世界书，false 只按当前搜索词重排
+async function renderImportEntries(reload) {
+    const $box = $('#npcp_imp_entries');
+    if (!$box.length) return;
+    const target = getTargetBooks();
+    const key = target.books.join('|');
+    const needRead = reload === true || impCacheKey === null || key !== impCacheKey;
+
+    if (needRead && !target.books.length) {
+        // 未绑定世界书 —— 自动跳过，不影响其它添加方式
+        impEntries = []; impCacheKey = key; impPicked.clear();
+        $box.html('<div class="npcp-empty">（未绑定世界书 —— 这一步可以跳过，直接用上面的「调用API识别添加NPC」）</div>');
+        setImportStatus('未绑定世界书：已跳过世界书步骤，可用「调用API识别添加NPC」');
+        updateImportRunLabel();
+        return;
+    }
+    if (needRead) {
+        impLimit = IMP_PAGE;
+        impPicked.clear();
+        $box.html('<div class="npcp-empty">正在读取条目…</div>');
+        impEntries = await collectImportEntries(reload === true);
+        impCacheKey = key;
+    }
+
+    const bookText = '《' + target.books.join('》《') + '》';
+    const kw = String($('#npcp_imp_search').val() || '').trim().toLowerCase();
+    const list = !kw ? impEntries : impEntries.filter(it =>
+        it.label.toLowerCase().includes(kw)
+        || it.keys.some(k => String(k).toLowerCase().includes(kw))
+        || String(it.uid).includes(kw));
+
+    if (!list.length) {
+        $box.html('<div class="npcp-empty">（' + (impEntries.length ? '没有匹配「' + escapeHtml(kw) + '」的条目' : bookText + '里没有可用条目') + '）</div>');
+        setImportStatus(bookText + '共 ' + impEntries.length + ' 个可用条目');
+        updateImportRunLabel();
+        return;
+    }
+
+    const shown = list.slice(0, impLimit);
+    const multiBook = target.books.length > 1;
+    const rows = shown.map(it => {
+        const i = impEntries.indexOf(it);
+        const on = impPicked.has(i);
+        const tip = '《' + it.book + '》#' + it.uid + (it.keys.length
+            ? '　关键词：' + it.keys.slice(0, 8).join('、')
+            : '　（该条目没填关键词，名字取正文首格）');
+        return '<div class="npcp-imp-row' + (on ? ' on' : '') + (it.name ? '' : ' no-name') + '" data-i="' + i + '" title="' + escapeHtml(tip) + '">' +
+            '<input type="checkbox" class="npcp-imp-pick"' + (on ? ' checked' : '') + (it.name ? '' : ' disabled') + '>' +
+            '<span class="npcp-imp-title">' + escapeHtml(it.label) + '</span>' +
+            (multiBook ? '<span class="npcp-imp-book">《' + escapeHtml(it.book) + '》</span>' : '') +
+            '<span class="npcp-imp-to' + (it.name ? '' : ' warn') + '">' + (it.name ? '→ 「' + escapeHtml(it.name) + '」' : '未识别到姓名') + '</span>' +
+        '</div>';
+    }).join('');
+    $box.html(rows + (list.length > shown.length
+        ? '<div class="npcp-imp-more">显示更多（还有 ' + (list.length - shown.length) + ' 条）</div>' : ''));
+    setImportStatus('从' + bookText + '读到 ' + impEntries.length + ' 个可用条目'
+        + (kw ? '，匹配「' + kw + '」' + list.length + ' 条' : '') + '　勾选后点「导入所选人物」');
+    updateImportRunLabel();
+}
+
+// 导入勾选的条目 → 先进「待审核人物」队列（弹窗默认全选，确认一次即完成）
+function importSelectedEntries() {
+    const picks = [];
+    impPicked.forEach(i => {
+        const it = impEntries[i];
+        if (it && it.name) picks.push({ name: it.name, intro: '', notes: it.notes || '' });
+    });
+    if (!picks.length) {
+        setImportStatus('请先在上面勾选要导入的条目');
+        toastr.info('请先勾选要导入的条目');
+        return;
+    }
+    const added = queueNpcCandidates(picks, '世界书导入');
+    impPicked.clear();
+    updateImportRunLabel();
+    const txt = '已导入 ' + added.length + ' 人到「待审核人物」'
+        + (added.length ? '：' + added.join('、') : '（勾选的人已在名单里，或已在忽略名单）')
+        + (added.length ? '　请在上方弹窗里确认加入' : '');
+    setImportStatus(txt);
+    setProgress('📥 ' + txt);
+    renderNpcRows();
 }
 
 // ------------------------------ 主角/用户角色排除 ------------------------------
@@ -3667,9 +3802,6 @@ function addSettingsUI() {
             <div class="menu_button" id="npcp_chat_clear" title="只清空本聊天的NPC名单（不影响其它聊天）"><i class="fa-solid fa-eraser"></i><span>清空本聊天名单</span></div>
         </div>
         <div id="npcp_list"></div>
-                    <div class="menu_button menu_button_icon" id="npcp_add">
-                        <i class="fa-solid fa-plus"></i><span>添加NPC</span>
-                    </div>
                 </div>
 
                 <div class="npcp-group">
@@ -3721,14 +3853,13 @@ function addSettingsUI() {
     syncRunButton();
 }
 
-// ------------------------------ 分栏导航与数据库栏位 ------------------------------
-// 把面板正文按 PANEL_TABS 的 6 个选项卡拆开（通用 / API / 世界书 / NPC名单 / 平行视角 / 日志），每页独立滚动
+// ------------------------------ 分栏导航 ------------------------------
+// 把面板正文按 PANEL_TABS 的 5 个选项卡拆开（通用 / API / NPC · 世界书 / 平行视角 / 日志），每页独立滚动
 
 const PANEL_TABS = [
     { id: 'general', icon: 'fa-sliders', label: '通用' },
     { id: 'api', icon: 'fa-plug', label: 'API' },
-    { id: 'worldinfo', icon: 'fa-book', label: '世界书 · 数据库' },
-    { id: 'npcs', icon: 'fa-users', label: 'NPC名单' },
+    { id: 'npcs', icon: 'fa-users', label: 'NPC · 世界书' },
     { id: 'pov', icon: 'fa-book-open', label: '平行视角' },
     { id: 'logs', icon: 'fa-scroll', label: '日志' },
 ];
@@ -3742,6 +3873,13 @@ const TAB_GROUP_MAP = [
     { match: /提示词模板/, tab: 'general' },
     { match: /运行日志/, tab: 'logs' },
 ];
+
+// 容错：旧版本把「世界书」单列一页（activeTab='worldinfo'），现在已并入 NPC 页
+function safeTabId(tab) {
+    const id = String(tab || '');
+    if (id === 'worldinfo') return 'npcs';
+    return PANEL_TABS.some(t => t.id === id) ? id : 'general';
+}
 
 const WI_PANE_HTML = `
     <div class="npcp-group npcp-wi-picker-group collapsed" id="npcp_wi_picker_group">
@@ -4172,58 +4310,112 @@ function buildScrollNav() {
     setTimeout(updateScrollNav, 300);
 }
 
-// ------------------------------ 数据库联动绑定 ------------------------------
-function bindDatabaseUI() {
-    $('#npcp_auto_sync_db').on('change', function () { settings().autoSyncDatabase = $(this).prop('checked'); saveSettingsDebounced(); });
-    $('#npcp_db_entry').on('input', function () { settings().dbWorldEntryName = $(this).val().trim() || '重要人物表'; saveSettingsDebounced(); });
+// ------------------------------ 添加NPC / 从世界书导入 绑定 ------------------------------
+function bindNpcSourceUI() {
+    // ① 「调用API识别添加NPC」：读近期正文由模型识别人物；有绑定世界书时顺带读世界书，没绑定则自动跳过
+    $('#npcp_api_add').on('click', dedupe(async function () {
+        const $b = $(this);
+        $b.addClass('disabled');
+        setAddStatus('正在识别人物：调用API读取近期正文…（未绑定世界书会跳过世界书那一步）');
+        try {
+            const r = await syncNpcSources({ useLLM: true });
+            const text = formatSyncReport(r);
+            setAddStatus(text);
+            setProgress(text);
+            renderNpcRows();
+            if (r.pending > 0) toastr.success('发现 ' + r.pending + ' 名新人待审核');
+            else toastr.info('识别完成：没有新人物');
+            addLog('info', '人物识别：待审核 ' + r.pending + ' 名，跳过 ' + r.skipped + ' 名，来源 ' + (r.source || '-'));
+        } catch (e) {
+            setAddStatus('❌ 识别失败：' + (e?.message || e));
+            toastr.error('识别出错：' + (e?.message || e));
+        } finally { $b.removeClass('disabled'); }
+    }, 600));
     $('#npcp_auto_presence').on('change', function () { settings().autoDetectPresence = $(this).prop('checked'); saveSettingsDebounced(); });
- // 世界书绑定 + 立即同步人物（读世界书 + 调用API），结果写入面板内状态行
+
+    // ② 从世界书导入：换书 → 重列条目；勾选条目 → 导入（不调API）
     $('#npcp_wb_mode').on('change', function () {
         settings().wbMode = $(this).val() || 'char';
         saveSettingsDebounced();
         try { renderWorldbookOptions(); } catch (e) { /* ignore */ }
+        renderImportEntries(true);
     });
     $('#npcp_wb_manual').on('change', function () {
         settings().wbManual = $(this).val() || '';
         saveSettingsDebounced();
-        setDbStatus('已绑定世界书：' + (settings().wbManual || '（未选择）'));
+        setImportStatus('已选择世界书：' + (settings().wbManual ? '《' + settings().wbManual + '》' : '（未选择）'));
+        renderImportEntries(true);
     });
     $('#npcp_wb_refresh').on('click', dedupe(function () {
         const n = renderWorldbookOptions();
-        setDbStatus('世界书列表已刷新，共 ' + n + ' 本' + (n ? '' : '（未读取到，请确认酒馆中存在世界书）'));
+        setImportStatus('世界书列表已刷新，共 ' + n + ' 本' + (n ? '' : '（未读取到，请确认酒馆中存在世界书）'));
         toastr.info('书单已重载（共 ' + n + ' 本）');
+        renderImportEntries(true);
     }, 300));
-    $('#npcp_db_sync2').on('click', dedupe(async function () {
-        const $b = $(this);
-        $b.addClass('disabled');
-        setDbStatus('正在同步：读取世界书 + 调用API识别人物…');
-        try {
-            const r = await syncFromDatabase({ useLLM: true });
-            const text = formatSyncReport(r);
-            setDbStatus(text);
-            renderNpcRows();
-            if (r.pending > 0) toastr.success('发现 ' + r.pending + ' 名新人待审核');
-            else toastr.info('同步完成：无新人物');
-            addLog('info', '人物同步：新增 ' + r.added + '，跳过 ' + r.skipped + '，来源 ' + (r.source || '-'));
-        } catch (e) {
-            setDbStatus('❌ 同步失败：' + (e?.message || e));
-            toastr.error('同步出错：' + (e?.message || e));
-        } finally { $b.removeClass('disabled'); }
-    }, 600));
+    $('#npcp_imp_refresh').on('click', dedupe(function () { renderImportEntries(true); }, 300));
+    $('#npcp_imp_search').on('input', dedupe(function () { renderImportEntries(false); }, 260));
+    $('#npcp_imp_all').on('click', function () {
+        $('#npcp_imp_entries .npcp-imp-row').each(function () {
+            const $cb = $(this).find('.npcp-imp-pick').first();
+            if (!$cb.length || $cb.prop('disabled')) return;
+            impPicked.add(Number($(this).data('i')));
+            $cb.prop('checked', true);
+            $(this).addClass('on');
+        });
+        updateImportRunLabel();
+    });
+    $('#npcp_imp_none').on('click', function () {
+        impPicked.clear();
+        $('#npcp_imp_entries .npcp-imp-pick').prop('checked', false);
+        $('#npcp_imp_entries .npcp-imp-row').removeClass('on');
+        updateImportRunLabel();
+    });
+    $('#npcp_imp_run').on('click', dedupe(importSelectedEntries, 400));
+    $('#npcp_imp_entries')
+        .on('click', '.npcp-imp-row', function (e) {
+            if (e.target && e.target.tagName === 'INPUT') return;   // 点复选框走原生 change
+            const $cb = $(this).find('.npcp-imp-pick').first();
+            if (!$cb.length || $cb.prop('disabled')) return;
+            $cb.prop('checked', !$cb.prop('checked')).trigger('change');
+        })
+        .on('change', '.npcp-imp-pick', function () {
+            const i = Number($(this).closest('.npcp-imp-row').data('i'));
+            const on = $(this).prop('checked');
+            if (on) impPicked.add(i); else impPicked.delete(i);
+            $(this).closest('.npcp-imp-row').toggleClass('on', on);
+            updateImportRunLabel();
+        })
+        .on('click', '.npcp-imp-more', function (e) {
+            e.stopPropagation();
+            impLimit += IMP_PAGE;
+            renderImportEntries(false);
+        });
+
+    // ③ 按前缀批量导入（备用方式：条目标题里含前缀的整条当作一个人物）
+    $('#npcp_prefix_head').on('click', function () { $('#npcp_prefix_group').toggleClass('collapsed'); });
+    $('#npcp_db_entry').on('focus', function () { $('#npcp_prefix_group').removeClass('collapsed'); });
+    $('#npcp_auto_sync_db').on('change', function () { settings().autoSyncDatabase = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#npcp_db_entry').on('input', function () {
+        const v = $(this).val().trim() || '重要人物表';
+        settings().dbWorldEntryName = v;
+        saveSettingsDebounced();
+        $('#npcp_prefix_now').text('前缀：' + v);
+    });
     $('#npcp_db_sync3').on('click', dedupe(async function () {
         const $b = $(this);
         $b.addClass('disabled');
-        setDbStatus('正在读取世界书（不调用API）…');
+        setImportStatus('正在按前缀读取世界书（不调用API）…');
         try {
-            const r = await syncFromDatabase({ useLLM: false });
-            setDbStatus(formatSyncReport(r));
+            const r = await syncNpcSources({ useLLM: false });
+            setImportStatus(formatSyncReport(r));
             renderNpcRows();
             toastr.info('世界书同步完成：新增 ' + r.added + ' 名');
         } catch (e) {
-            setDbStatus('❌ 读取失败：' + (e?.message || e));
+            setImportStatus('❌ 读取失败：' + (e?.message || e));
             toastr.error('读取失败：' + (e?.message || e));
         } finally { $b.removeClass('disabled'); }
     }, 600));
+    $('#npcp_prefix_now').text('前缀：' + (settings().dbWorldEntryName || '重要人物表'));
 }
 
 function buildPanelTabs() {
@@ -4234,7 +4426,7 @@ function buildPanelTabs() {
     // 1) 顶部页签栏
     const $tabs = $('<div class="npcp-tabs"></div>');
     PANEL_TABS.forEach(t => {
-        const active = (settings().activeTab || 'general') === t.id ? ' active' : '';
+        const active = safeTabId(settings().activeTab) === t.id ? ' active' : '';
         $tabs.append(`<div class="npcp-tab${active}" data-tab="${t.id}"><i class="fa-solid ${t.icon}"></i><span>${t.label}</span></div>`);
     });
 
@@ -4259,25 +4451,27 @@ function buildPanelTabs() {
         $paneMap[tab].append($el);
     });
 
-    // 4) 各页专属内容（世界书 · 数据库 / 平行视角 / NPC 名单）
-    $paneMap.worldinfo.append(DB_PANE_HTML);   // 世界书绑定 + 数据库联动
-    $paneMap.worldinfo.append(WI_PANE_HTML);   // 常驻世界书注入
-    $paneMap.pov.append(POV_PANE_HTML);   // 平行视角管理栏
+    // 4) 各页专属内容（NPC · 世界书 合并页 / 平行视角）
+    $paneMap.npcs.append(NPC_ADD_PANE_HTML);   // 添加NPC + 从世界书导入
+    $paneMap.npcs.append(WI_PANE_HTML);        // 常驻世界书注入
+    $paneMap.pov.append(POV_PANE_HTML);        // 平行视角管理栏
 
     // 5) 组装并绑定
     $body.empty().append($tabs).append($wrap);
     try { buildScrollNav(); } catch (e) { /* ignore */ }   // 右下角滚动按钮
     $tabs.on('click', '.npcp-tab', function () { switchTab($(this).data('tab')); });
-    bindDatabaseUI();
+    bindNpcSourceUI();
     try { bindWiUI(); } catch (e) { console.warn('[npcp] 世界书栏位初始化失败', e); }
     try { bindPovUI(); renderPovList(); } catch (e) { console.warn('[npcp] 平行视角管理初始化失败', e); }
     switchTab(settings().activeTab || 'general');
+ // 「从世界书导入」区的条目列表延迟加载（读的是缓存，开面板即列好）
+    try { setTimeout(() => { try { renderImportEntries(false); } catch (e) { /* ignore */ } }, 60); } catch (e) { /* ignore */ }
  // 日志页变为可见时补一次渲染
     try { setTimeout(() => { try { renderLogs(); } catch (e) { /* ignore */ } }, 0); } catch (e) { /* ignore */ }
 }
 
 function switchTab(tab) {
-    if (!tab) tab = 'general';
+    tab = safeTabId(tab);
     settings().activeTab = tab;
     saveSettingsDebounced();
     $('#npcp_panel_body .npcp-tab').removeClass('active').filter(`[data-tab="${tab}"]`).addClass('active');
@@ -4529,7 +4723,7 @@ function injectExtensionsEntry() {
     const html = `
     <div id="npcp_ext_entry" class="npcp-ext-entry">
         <div class="npcp-ext-entry-head"><i class="fa-solid fa-wand-magic-sparkles"></i><b>众生侧写</b></div>
-        <div class="npcp-ext-entry-desc">离场角色的平行视角补写 · 数据库联动 · 世界书注入</div>
+        <div class="npcp-ext-entry-desc">离场角色的平行视角补写 · 世界书人物导入 · 世界书注入</div>
         <div class="npcp-buttons">
             <div class="menu_button menu_button_icon" id="npcp_ext_open"><i class="fa-solid fa-maximize"></i><span>打开悬浮设置窗</span></div>
         </div>
@@ -4553,11 +4747,36 @@ function injectExtensionsEntry() {
     $('#npcp_ext_open').on('click', openPanel);
 }
 
-// 世界书 · 数据库（同一页：先定「从哪本书读」，再定同步方式，最后是注入）
-const DB_PANE_HTML = `
-    <div class="npcp-group">
-        <b>🔗 世界书绑定（从哪本书读）</b>
-        <label>绑定方式
+// 「NPC · 世界书」页的专属内容（接在「👥 NPC 名单」组之后）：
+//   ① 添加NPC（手动 / 调用API识别）  ② 从世界书导入（选条目 → 导入，不调API）  ③ 按前缀批量导入（备用方式）
+const NPC_ADD_PANE_HTML = `
+    <div class="npcp-group" id="npcp_add_group">
+        <b>➕ 添加NPC</b>
+        <div class="npcp-buttons">
+            <div class="menu_button menu_button_icon" id="npcp_add" title="先加一个空位，再逐格手填名字与备注">
+                <i class="fa-solid fa-plus"></i><span>手动添加空位</span>
+            </div>
+            <div class="menu_button" id="npcp_api_add" title="读近期正文，由模型找出其中的重要人物">
+                <i class="fa-solid fa-wand-magic-sparkles"></i><span>调用API识别添加NPC</span>
+            </div>
+        </div>
+        <label class="checkbox_label" for="npcp_auto_presence">
+            <input id="npcp_auto_presence" type="checkbox"><span>正文结束后自动识别在场/离场人物（每轮 1 次轻量调用）</span>
+        </label>
+        <div class="npcp-status" id="npcp_add_status"></div>
+        <small class="npcp-hint">「调用API识别」= 读<b>近期正文</b>，由模型找出新登场的人物；已绑定世界书时会顺带读一次世界书补全档案，
+        <b>没绑定世界书就自动跳过世界书那一步</b>，识别照常进行。<br>
+        识别到的人一律先进「待审核人物」队列，勾选确认后才真正进名单。</small>
+    </div>
+
+    <div class="npcp-group" id="npcp_import_group">
+        <b>📥 从世界书导入 NPC（不调API）</b>
+        <small class="npcp-hint"><b>这个世界书的作用</b>：把条目里<b>已经写好的人物</b>直接导入成 NPC。名字取条目的
+        <b>关键词</b>（没填关键词时取表格首格 / 首行），条目正文作为该 NPC 的备注 —— 全程<b>不调用 API</b>，不花额度。<br>
+        用法：① 选定从哪本书读 → ② 在下面勾选条目（右侧会显示"将导入成谁"）→ ③ 点「导入所选人物」→ 在弹窗里确认。<br>
+        条目内容写成表格或「键：值」都能读；酒馆里已禁用的条目、以及标题含「索引」的条目会自动跳过。</small>
+
+        <label>从哪本书读
             <select id="npcp_wb_mode" class="text_pole">
                 <option value="char">跟随角色卡绑定的世界书（推荐）</option>
                 <option value="chat">跟随当前聊天绑定的世界书</option>
@@ -4565,31 +4784,45 @@ const DB_PANE_HTML = `
                 <option value="all">全部（角色 + 聊天 + 全局）</option>
             </select>
         </label>
-        <label>手动选择世界书（绑定方式=手动指定时生效）
+        <label>手动选择世界书（上面选「手动指定」时生效）
             <select id="npcp_wb_manual" class="text_pole"></select>
         </label>
         <div class="npcp-buttons">
             <div class="menu_button" id="npcp_wb_refresh"><i class="fa-solid fa-rotate"></i><span>重载书单</span></div>
+            <div class="menu_button" id="npcp_imp_refresh"><i class="fa-solid fa-book-open"></i><span>重新读取条目</span></div>
         </div>
-        <div class="npcp-status" id="npcp_db_status"></div>
-    </div>
-    <div class="npcp-group">
-        <b>🗄 数据库联动（从世界书同步人物档案）</b>
-        <label>数据库条目名称前缀
-            <input id="npcp_db_entry" class="text_pole" type="text" placeholder="重要人物表">
-        </label>
-        <label class="checkbox_label" for="npcp_auto_sync_db">
-            <input id="npcp_auto_sync_db" type="checkbox"><span>每轮自动从世界书同步「重要人物表」</span>
-        </label>
-        <label class="checkbox_label" for="npcp_auto_presence">
-            <input id="npcp_auto_presence" type="checkbox"><span>正文结束后自动识别在场/离场人物</span>
-        </label>
+        <div class="npcp-status" id="npcp_imp_status"></div>
+
+        <input id="npcp_imp_search" class="text_pole" type="text" placeholder="搜索条目（标题 / 关键词）…">
         <div class="npcp-buttons">
-            <div class="menu_button" id="npcp_db_sync2"><i class="fa-solid fa-database"></i><span>立即同步人物（读世界书 + 调API识别）</span></div>
-            <div class="menu_button" id="npcp_db_sync3"><i class="fa-solid fa-book-open"></i><span>仅读世界书同步（不调API）</span></div>
+            <div class="menu_button" id="npcp_imp_all"><i class="fa-solid fa-check-double"></i><span>全选</span></div>
+            <div class="menu_button" id="npcp_imp_none"><i class="fa-solid fa-xmark"></i><span>清空选择</span></div>
+            <div class="menu_button npcp-imp-run" id="npcp_imp_run"><i class="fa-solid fa-file-import"></i><span>导入所选人物</span></div>
         </div>
-        <small class="npcp-hint">匹配规则：条目标题/注释包含上方前缀、且不含「索引」二字。存档表格可以带表头（列名从表头读）也可以是「键：值」文本，<b>不限定某个扩展的导出格式</b>。<br>
-        同步到的人物一律先进「待审核人物」队列，勾选确认后才加入名单。</small>
+        <div id="npcp_imp_entries" class="npcp-imp-list"></div>
+    </div>
+
+    <div class="npcp-group npcp-wi-picker-group collapsed" id="npcp_prefix_group">
+        <div class="npcp-wi-picker-head" id="npcp_prefix_head" title="点击展开 / 收起">
+            <b>🅰 按条目名称前缀批量导入（备用方式 · 不调API）</b>
+            <span class="npcp-wi-picker-names" id="npcp_prefix_now"></span>
+            <i class="fa-solid fa-chevron-down npcp-wi-picker-arrow"></i>
+        </div>
+        <div class="npcp-wi-picker-body" id="npcp_prefix_body">
+            <small class="npcp-hint">凡<b>标题里含有这个前缀</b>的条目，都会被当成「一个人物」读出来 → 先进待审核队列。<br>
+            例：条目标题写成 <code>NPC_林宛秋</code>、<code>NPC_墨白</code>，这里填 <code>NPC</code>，点下面按钮一次就把两人一起导入。<br>
+            表格形（带表头的表格会按表头列名解析）与「键：值」文本都能读，<b>不限定是哪个插件导出的格式</b>；
+            默认值 <code>重要人物表</code> 兼容"整表导出人物档案"的条目。</small>
+            <label>条目名称前缀
+                <input id="npcp_db_entry" class="text_pole" type="text" placeholder="如：NPC">
+            </label>
+            <label class="checkbox_label" for="npcp_auto_sync_db">
+                <input id="npcp_auto_sync_db" type="checkbox"><span>每轮自动按前缀同步（只读世界书，不调API）</span>
+            </label>
+            <div class="npcp-buttons">
+                <div class="menu_button" id="npcp_db_sync3"><i class="fa-solid fa-book-open"></i><span>按前缀同步（不调API）</span></div>
+            </div>
+        </div>
     </div>
 `;
 
