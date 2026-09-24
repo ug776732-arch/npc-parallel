@@ -1,8 +1,8 @@
-# 众生侧写（npc-parallel） v1.0.0 SillyTavern 扩展
+# 众生侧写（npc-parallel） v1.0.1 SillyTavern 扩展
 
 **一句话**：主正文结束后，扩展为「此刻不在场景里」的 NPC 各自补写一段**平行视角**，折叠在 AI 回复下方 —— 主角没看见的那部分世界，照常在发生。
 
-SillyTavern 前端扩展 ｜ 兼容 **1.12+** ｜ 无第三方依赖、无遥测 ｜ 首个正式版
+SillyTavern 前端扩展 ｜ 兼容 **1.12+** ｜ 无第三方依赖、无遥测 ｜ 支持 Git URL 安装 + 一键更新
 
 ---
 
@@ -42,7 +42,7 @@ SillyTavern/data/<你的用户名，默认 default-user>/extensions/npc-parallel
 **③ 判断扩展有没有真的加载**：按 `F12` 打开控制台，刷新后应看到
 
 ```
-[npc-parallel] 众生侧写 v1.0.0 已加载
+[npc-parallel] 众生侧写 v1.0.1 已加载
 [npc-parallel] 悬浮球元素: 已创建 OK
 ```
 
@@ -60,17 +60,33 @@ SillyTavern/data/<你的用户名，默认 default-user>/extensions/npc-parallel
 
 ## 一、安装
 
-### 方式 A：扩展面板安装（推荐）
-1. 把本目录打包为 zip（或将整个 `npc-parallel` 文件夹推送到任意 Git 仓库）
-2. SillyTavern → 顶部 **扩展（Extensions）面板** → **Install extension**
-3. 输入 Git 仓库地址；若用 zip，解压到：
+### 方式 A：Git URL 安装（推荐 · 支持一键更新）
+1. SillyTavern → 顶部 **扩展（Extensions）面板** → **Install extension**
+2. 填本仓库地址：
+   ```
+   https://github.com/ug776732-arch/npc-parallel
+   ```
+3. 装好后刷新页面（`Ctrl + F5`）。
+
+**以后更新**：扩展面板里本扩展会出现 **「Update available」** 按钮 → 点一下 → 刷新页面即可。
+（若你的酒馆 `config.yaml` 保持默认 `extensions.autoUpdate: true`，酒馆版本变化后启动时会自动更新本扩展。）
+
+> 没看到「Update available」？说明你是"手动放置"安装的（目录不是 Git 仓库，无法一键更新），按下面的迁移步骤重装一次即可。
+
+### 方式 B：手动放置（无一键更新）
+1. 解压后把 `npc-parallel` 整个文件夹放到：
    ```
    SillyTavern/data/<你的用户名，默认 default-user>/extensions/npc-parallel/
    ```
-   （确保目录内直接是 `manifest.json`、`index.js`、`style.css`）
+   （确保目录内**直接**是 `manifest.json`、`index.js`、`style.css`，不能多套一层）
+2. 刷新页面（`Ctrl + F5`）；若无效则重启 SillyTavern。
 
-### 方式 B：手动放置
-将 `npc-parallel` 整个文件夹复制到上面的路径，然后刷新页面（或重启 SillyTavern）。
+### 从手动安装迁移到一键更新（一次性 · 设置不会丢）
+1. 先**删除** `extensions/npc-parallel` 目录（同名目录已存在时，URL 安装会因"目录已存在"失败）
+2. 按 **方式 A** 重新安装
+3. `Ctrl + F5` 刷新
+
+> 扩展设置保存在酒馆 `settings.json` 的 `extension_settings.npc_parallel` 下，NPC 名单按聊天保存在 `chat_metadata` 里，**都不在扩展目录内**，所以删除/重装不会丢配置。
 
 安装成功后，点击右下角**悬浮球**（🪄，可拖拽）呼出悬浮设置窗；也可点左下角**「魔法棒」菜单**（输入框左侧汉堡图标）→ "众生侧写 · 设置" 打开。
 
@@ -237,6 +253,7 @@ SillyTavern/data/<你的用户名，默认 default-user>/extensions/npc-parallel
 - 每次生成：成功（耗时/字数）或失败（超时、HTTP 状态码、响应片段）
 - 在场判定结果、API 通道切换/回退、模板与连接测试
 - 排障顺序建议：先看 `HTTP xxx`（地址/Key/模型问题）→ `请求超时`（调大超时、开启流式或换通道）→ `只输出了思维链/没有正文`（关闭该模型的推理/思维链，或调大「回复Token上限」）→ `端点未按流式返回`（取消「流式请求」）→ 正文格式异常（模型未按标签输出，解析层会兜底，必要时换更强的模型）
+- **日志页空白 / 内容不更新？** v1.0.1 起已修：切到「日志」页会自动刷新（旧版本需要一直停在该页才会刷新）。任何版本都可以点 **「导出」** 下载完整日志文本 —— 反馈问题时请附这个文件；若导出内容也是"（暂无日志）"，说明浏览器不允许写入本地存储（隐私模式/禁用站点数据），日志刷新即丢，v1.0.1 起会给出提示
 - **自定义模型"不知道前文/只认识当前正文"**：检查「上下文字符预算」是否为 0（0=不带历史）；日志中成功记录会标注 `N条历史`，N=0 即未发送历史。注意历史只包含主正文之前的消息，当轮主正文始终通过模板内 `${main_text}` 发送。
 
 ## 十、注意事项
@@ -255,4 +272,9 @@ SillyTavern/data/<你的用户名，默认 default-user>/extensions/npc-parallel
 
 ## 版本
 
+**v1.0.1** — 修复：面板「日志」页切过去不刷新、一直空白；日志写不进浏览器存储时现在会明确提示。
 **v1.0.0** — 首个正式版。
+
+### 更新方式（一句话）
+扩展面板 → 点本扩展的「Update available」→ `Ctrl + F5`。
+手动放置安装的用户请先按「一、安装 → 从手动安装迁移」改成 Git URL 安装，之后即可一键更新（设置与 NPC 名单不会丢）。

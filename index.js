@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · 首个正式版 v1.0.0
+// SillyTavern 前端扩展 · v1.0.1
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.0';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.1';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -411,7 +411,14 @@ function addLog(level, msg, extra = {}) {
     while (logs.length > 300) logs.shift();
     try {
         localStorage.setItem(LOG_KEY, JSON.stringify(logs));
-    } catch { /* 隐私模式/配额：仅保留在内存 */ }
+    } catch {
+        // 隐私模式/配额限制：日志只能留在内存，刷新即丢。
+        // 以前这里是完全静默的 —— 用户遇到“日志是空的”时无从判断，故提示一次。
+        if (!addLog.__storageWarned) {
+            addLog.__storageWarned = true;
+            try { toastr.warning('日志无法写入浏览器存储（隐私模式/配额？）——刷新后会丢失，请及时点「导出」'); } catch (e) { /* ignore */ }
+        }
+    }
     scheduleRenderLogs();
 }
 
@@ -441,9 +448,10 @@ function fmtLog(e) {
 function renderLogs() {
     const $box = $('#npcp_logbox');
     if (!$box.length) return;
- // 日志页没显示时不必重建 DOM（性能）
+ // 日志页没显示时不必重建 DOM（性能）；
+    // 但“一次都还没渲染过”时必须渲染 —— 否则切到日志页（或清空后）会一直停在空白页。
     const el = $box[0];
-    if (el && el.offsetParent === null) return;
+    if (el && el.offsetParent === null && $box.children().length) return;
     const logs = getLogs();
     if (!logs.length) {
         $box.html('<div class="npcp-log-info">（暂无日志）</div>');
@@ -4478,6 +4486,9 @@ function switchTab(tab) {
     $('#npcp_panel_body .npcp-pane').removeClass('active').filter(`[data-pane="${tab}"]`).addClass('active');
  // 换页后内容高度变了，刷新滚动按钮可用状态
     try { setTimeout(updateScrollNav, 60); } catch (e) { /* ignore */ }
+ // 【v1.0.1 修复】日志页被切到前台时补一次渲染：renderLogs 在“日志页不可见”时会早退，
+    // 不补这一枪就会一直停在打开面板那一刻的旧快照（表现：日志页整页空白）。
+    try { setTimeout(() => { try { renderLogs(); } catch (e) { /* ignore */ } }, 0); } catch (e) { /* ignore */ }
 }
 
 
