@@ -7,7 +7,8 @@
 
 /* ============================ 设计令牌（根） ============================ */
 .npc_parallel,
-.npcp-root {
+.npcp-root,
+#npcp_review_dlg {
     --npcp-font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     --npcp-mono: ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
     --npcp-radius: 10px;
@@ -20,7 +21,8 @@
 
 /* 黑夜（默认） */
 .npc_parallel,
-.npcp-root[data-npcp-theme="night"] {
+.npcp-root[data-npcp-theme="night"],
+#npcp_review_dlg[data-npcp-theme="night"] {
     --npcp-bg: #2c2c2c;
     --npcp-bg-2: #242424;
     --npcp-bg-3: #383838;
@@ -40,7 +42,8 @@
 }
 
 /* 白天 */
-.npcp-root[data-npcp-theme="day"] {
+.npcp-root[data-npcp-theme="day"],
+#npcp_review_dlg[data-npcp-theme="day"] {
     --npcp-bg: #ffffff;
     --npcp-bg-2: #f4f4f7;
     --npcp-bg-3: #ececf1;
@@ -418,14 +421,20 @@
 /* 按钮（横向排列） */
 .npcp-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
 .npcp-root .menu_button,
-.npcp-root #npcp_add {
+.npcp-root #npcp_add,
+#npcp_review_dlg .menu_button {
     display: inline-flex !important; flex-direction: row !important;
     align-items: center; justify-content: center; gap: 7px;
     white-space: nowrap;
-    border: 1px solid var(--npcp-line);
+    /* 【v1.0.2】酒馆主题会给 .menu_button 上 background/color/filter（grayscale），
+       「白天」主题下会出现深底深字的“全黑按钮” → 这里强制用自己的令牌并关掉滤镜。 */
+    border: 1px solid var(--npcp-line) !important;
     border-radius: var(--npcp-radius-sm);
-    background: var(--npcp-bg-3);
-    color: var(--npcp-on);
+    background: var(--npcp-bg-3) !important;
+    color: var(--npcp-on) !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    text-shadow: none !important;
     padding: 9px 14px;
     font-size: 0.88em;
     min-height: 36px;
@@ -434,11 +443,14 @@
     touch-action: manipulation;
     transition: background var(--npcp-dur-fast) var(--npcp-ease), color var(--npcp-dur-fast) var(--npcp-ease), border-color var(--npcp-dur-fast) var(--npcp-ease);
 }
-.npcp-root .menu_button > i, .npcp-root .menu_button > span { display: inline-block; white-space: nowrap; flex: 0 0 auto; }
-.npcp-root .menu_button:hover, .npcp-root #npcp_add:hover {
-    background: var(--npcp-accent); border-color: var(--npcp-accent); color: #fff;
+.npcp-root .menu_button > i, .npcp-root .menu_button > span,
+#npcp_review_dlg .menu_button > i, #npcp_review_dlg .menu_button > span { display: inline-block; white-space: nowrap; flex: 0 0 auto; }
+.npcp-root .menu_button:hover, .npcp-root #npcp_add:hover,
+#npcp_review_dlg .menu_button:hover {
+    background: var(--npcp-accent) !important; border-color: var(--npcp-accent) !important; color: #fff !important;
 }
-.npcp-root .menu_button.disabled, .npcp-root .menu_button:disabled { opacity: 0.5; pointer-events: none; }
+.npcp-root .menu_button.disabled, .npcp-root .menu_button:disabled,
+#npcp_review_dlg .menu_button.disabled, #npcp_review_dlg .menu_button:disabled { opacity: 0.5; pointer-events: none; filter: none !important; }
 .npcp-root #npcp_add { justify-content: center; border-style: dashed; }
 
 /* 主操作（补写） */
@@ -518,6 +530,18 @@
 .npcp-log-ok { color: var(--npcp-ok); }
 .npcp-log-warn { color: var(--npcp-warn); }
 .npcp-log-error { color: var(--npcp-danger); }
+
+/* 插件更新（日志页 → 日志下方） */
+.npcp-root .npcp-upd-status {
+    font-size: 0.82em; line-height: 1.65; color: var(--npcp-sub);
+    background: var(--npcp-bg-2); border: 1px solid var(--npcp-line);
+    border-radius: var(--npcp-radius-xs); padding: 7px 10px; word-break: break-word;
+}
+.npcp-root #npcp_upd_apply {
+    background: var(--npcp-accent) !important; border-color: var(--npcp-accent) !important;
+    color: #fff !important; font-weight: 600;
+}
+.npcp-root #npcp_upd_apply:hover { background: var(--npcp-accent-2) !important; border-color: var(--npcp-accent-2) !important; }
 
 /* 扩展菜单入口卡片 */
 #npcp_ext_entry { border: 1px solid var(--npcp-line, rgba(230,227,242,0.16)); border-radius: 10px; padding: 12px 14px; margin: 10px 0 4px; display: flex; flex-direction: column; gap: 8px; background: var(--npcp-accent-soft, rgba(124,107,240,0.1)); }

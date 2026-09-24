@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.1
+// SillyTavern 前端扩展 · v1.0.2
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.1';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.2';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -490,6 +490,148 @@ async function copyLogs() {
         toastr.success('日志已复制到剪贴板');
     } catch {
         toastr.error('复制失败，请改用导出');
+    }
+}
+
+// ------------------------------ 面板内更新（Git 安装） ------------------------------
+// 直接调用酒馆自带的扩展接口（与扩展面板的「Update available」按钮同一套）：
+//   POST /api/extensions/version → { currentBranchName, currentCommitHash, isUpToDate, remoteUrl }
+//   POST /api/extensions/update  → git fetch + pull，返回 { shortCommitHash, isUpToDate }
+// 只有「Git 安装」的目录能更新；解压安装的目录不是仓库，服务端会报 not a Git repository。
+const NPCP_FOLDER_FALLBACK = 'npc-parallel';
+let lastUpdCheckTs = 0;
+
+function npcpHeaders() {
+    try {
+        const ctx = getContext();
+        if (ctx && typeof ctx.getRequestHeaders === 'function') return ctx.getRequestHeaders();
+    } catch (e) { /* ignore */ }
+    return { 'Content-Type': 'application/json' };
+}
+
+// 本扩展的目录名：从"自己的样式表"地址反推（/…/<目录名>/style.css）
+// 不用 import.meta —— 审计脚本等非模块上下文会解析报错；这里两种上下文都安全。
+function npcpFolderName() {
+    try {
+        const sheets = Array.from(document.styleSheets || []);
+        for (const sheet of sheets) {
+            let href = '';
+            try { href = String(sheet.href || (sheet.ownerNode && sheet.ownerNode.href) || ''); } catch (e) { /* ignore */ }
+            if (!href || !/\.css(\?|$)/i.test(href)) continue;
+            let isOurs = false;
+            try {
+                const rules = sheet.cssRules || [];
+                for (let i = 0; i < rules.length && i < 60; i++) {
+                    if (String(rules[i].cssText || '').includes('--npcp-font')) { isOurs = true; break; }
+                }
+            } catch (e) { /* 未加载完 / 跨域：跳过 */ }
+            if (!isOurs) continue;
+            const segs = href.split('?')[0].split('/').filter(Boolean);
+            segs.pop();                                  // style.css
+            const folder = decodeURIComponent(segs.pop() || '');
+            if (folder && folder !== 'third-party') return folder;
+        }
+    } catch (e) { /* ignore */ }
+    return NPCP_FOLDER_FALLBACK;
+}
+
+async function npcpExtensionRequest(action, isGlobal) {
+    const body = { extensionName: npcpFolderName() };
+    if (isGlobal) body.global = true;
+    const res = await fetch('/api/extensions/' + action, {
+        method: 'POST',
+        headers: npcpHeaders(),
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        let detail = '';
+        try { detail = await res.text(); } catch (e) { /* ignore */ }
+        throw new Error(detail || ('HTTP ' + res.status));
+    }
+    return res.json();
+}
+
+// 先按「用户扩展」调，失败再按「全局扩展」调（全局需要管理员权限）
+async function npcpExtensionCall(action) {
+    try { return await npcpExtensionRequest(action, false); }
+    catch (e) {
+        try { return await npcpExtensionRequest(action, true); }
+        catch (e2) { throw e; }
+    }
+}
+
+function setUpdStatus(text) {
+    const $s = $('#npcp_upd_status');
+    if ($s.length) $s.text(text);
+}
+
+function describeUpdError(e) {
+    const msg = String((e && e.message) || e || '');
+    if (/not a Git repository/i.test(msg)) {
+        return '这个目录不是 Git 仓库（解压安装）→ 无法一键更新：删掉扩展目录，用扩展面板 Install extension 填 https://github.com/ug776732-arch/npc-parallel 重装一次即可（设置与名单不会丢）';
+    }
+    if (/Forbidden|403/i.test(msg)) return '权限不足：全局安装的扩展只有酒馆管理员能更新';
+    if (/Failed to fetch|NetworkError|ERR_/i.test(msg)) return '连不上酒馆服务端（确认酒馆在运行、页面没掉线）';
+    return msg || '未知错误';
+}
+
+async function checkPluginUpdate(quiet) {
+    const $btn = $('#npcp_upd_check');
+    if ($btn.hasClass('disabled')) return;
+    try {
+        $btn.addClass('disabled');
+        if (!quiet) setUpdStatus('⏳ 正在检查更新…');
+        const d = await npcpExtensionCall('version');
+        lastUpdCheckTs = Date.now();
+        const branch = String((d && d.currentBranchName) || '');
+        const hash = String((d && d.currentCommitHash) || '').slice(0, 7);
+        if (!branch || !hash) {
+            setUpdStatus('ℹ️ 当前是「解压安装」，无法一键更新。改用 Git URL 安装后即可（见 README「从手动安装迁移」）');
+            addLog('info', '更新检查：当前目录不是 Git 仓库，无法一键更新');
+            return;
+        }
+        if (d.isUpToDate === false) {
+            setUpdStatus('⬆ 有新版本：本地 ' + branch + '@' + hash + ' → 点「一键更新」拉取最新代码');
+            addLog('info', '更新检查：有新版本可用（本地 ' + branch + '@' + hash + '）');
+            if (!quiet && settings().notify) toastr.info('有可用更新，可点「一键更新」', '众生侧写');
+        } else {
+            setUpdStatus('✅ 已是最新：' + branch + '@' + hash + '（插件版本 v' + NPCP_VERSION + '）');
+            addLog('ok', '更新检查：已是最新（' + branch + '@' + hash + '）');
+            if (!quiet && settings().notify) toastr.success('已是最新版本', '众生侧写');
+        }
+    } catch (e) {
+        const msg = describeUpdError(e);
+        setUpdStatus('❌ 检查失败：' + msg);
+        addLog('error', '更新检查失败：' + msg);
+    } finally {
+        $btn.removeClass('disabled');
+    }
+}
+
+async function applyPluginUpdate() {
+    const $btn = $('#npcp_upd_apply');
+    if ($btn.hasClass('disabled')) return;
+    try {
+        $btn.addClass('disabled');
+        setUpdStatus('⏳ 正在从 GitHub 拉取最新代码…（可能需要十几秒）');
+        const d = await npcpExtensionCall('update');
+        const short = String((d && d.shortCommitHash) || '').slice(0, 7);
+        if (d && d.isUpToDate === true) {
+            setUpdStatus('✅ 本地已是最新（' + (short || 'HEAD') + '），无需更新');
+            addLog('ok', '插件更新：本地已是最新（' + (short || 'HEAD') + '）');
+        } else {
+            setUpdStatus('✅ 已更新到 ' + (short || '最新版本') + ' → 点「刷新页面」生效（旧代码还在内存里）');
+            addLog('ok', '插件已更新：' + (short || 'latest') + '（刷新页面后生效）');
+            if (settings().notify) toastr.success('更新完成，请刷新页面生效', '众生侧写');
+        }
+        lastUpdCheckTs = Date.now();
+    } catch (e) {
+        const msg = describeUpdError(e);
+        setUpdStatus('❌ 更新失败：' + msg);
+        addLog('error', '插件更新失败：' + msg);
+        if (settings().notify) toastr.error('更新失败：' + msg, '众生侧写');
+    } finally {
+        $btn.removeClass('disabled');
     }
 }
 
@@ -2348,6 +2490,9 @@ function ensureReviewDialog() {
         document.body.appendChild(dlg);
         dlg.addEventListener('click', (e) => { if (e.target === dlg) { try { dlg.close(); } catch (err) { /* ignore */ } } });
     }
+    // 【v1.0.2】该弹窗挂在 <body> 下，不在 .npcp-root 作用域内 →
+    // 必须自带主题标记，否则会吃到酒馆主题的样式（「白天」主题下按钮变全黑、文字看不见）。
+    try { dlg.setAttribute('data-npcp-theme', currentTheme()); } catch (e) { /* ignore */ }
     return dlg;
 }
 
@@ -3639,7 +3784,10 @@ function currentTheme() {
 }
 
 function applyTheme() {
-    $('#npcp_floating').attr('data-npcp-theme', currentTheme());
+    const t = currentTheme();
+    $('#npcp_floating').attr('data-npcp-theme', t);
+    // 待审核弹窗挂在 body 下，主题标记要跟着一起换
+    try { $('#npcp_review_dlg').attr('data-npcp-theme', t); } catch (e) { /* ignore */ }
     $('#npcp_theme').val(settings().theme || 'night');
 }
 
@@ -3836,6 +3984,17 @@ function addSettingsUI() {
                         <div class="menu_button" id="npcp_log_clear"><i class="fa-solid fa-trash-can"></i><span>清空</span></div>
                     </div>
                 </div>
+
+                <div class="npcp-group">
+                    <b>⬆ 插件更新</b>
+                    <div class="npcp-hint">用 Git URL 安装的目录可以直接在这里拉取最新版（更新后点「刷新页面」生效）。解压安装的目录不支持一键更新，请按 README「从手动安装迁移」改成 URL 安装。</div>
+                    <div class="npcp-buttons">
+                        <div class="menu_button" id="npcp_upd_check" title="查询仓库最新提交，不下载"><i class="fa-solid fa-cloud-arrow-down"></i><span>检查更新</span></div>
+                        <div class="menu_button" id="npcp_upd_apply" title="从 GitHub 拉取最新代码（更新后需刷新页面生效）"><i class="fa-solid fa-rocket"></i><span>一键更新</span></div>
+                        <div class="menu_button" id="npcp_upd_reload" title="重新加载页面以应用更新"><i class="fa-solid fa-rotate-right"></i><span>刷新页面</span></div>
+                    </div>
+                    <div class="npcp-upd-status" id="npcp_upd_status"></div>
+                </div>
             </div>
         </div>
     </div>`;
@@ -3880,6 +4039,7 @@ const TAB_GROUP_MAP = [
     { match: /NPC 名单/, tab: 'npcs' },
     { match: /提示词模板/, tab: 'general' },
     { match: /运行日志/, tab: 'logs' },
+    { match: /插件更新/, tab: 'logs' },
 ];
 
 // 容错：旧版本把「世界书」单列一页（activeTab='worldinfo'），现在已并入 NPC 页
@@ -5018,6 +5178,10 @@ function openPanel() {
     try { syncSettingsUI(); } catch (e) { console.warn(e); }
     try { renderLogs(); } catch (e) { console.warn(e); }
     try { renderEndpointList(); } catch (e) { console.warn(e); }
+    // 开面板时静默查一次更新（同一会话内最多每 12 小时一次，失败不打扰）
+    try {
+        if (Date.now() - lastUpdCheckTs > 12 * 3600 * 1000) setTimeout(() => { checkPluginUpdate(true).catch(() => {}); }, 1500);
+    } catch (e) { /* ignore */ }
 
     // 自检：打开后仍不可见则输出诊断，便于排查
     try {
@@ -5497,6 +5661,12 @@ function bindSettingsUI() {
     $('#npcp_log_copy').on('click', () => copyLogs());
     $('#npcp_log_export').on('click', () => exportLogs());
     $('#npcp_log_clear').on('click', dedupe(() => clearLogs(), 300));
+
+    // 面板内一键更新（仅 Git 安装的目录可用）
+    setUpdStatus('当前版本 v' + NPCP_VERSION + '（点「检查更新」查询仓库最新版）');
+    $('#npcp_upd_check').on('click', dedupe(() => { checkPluginUpdate(false).catch(e => console.error('[npc-parallel] 检查更新异常', e)); }, 800));
+    $('#npcp_upd_apply').on('click', dedupe(() => { applyPluginUpdate().catch(e => console.error('[npc-parallel] 更新异常', e)); }, 800));
+    $('#npcp_upd_reload').on('click', dedupe(() => location.reload(), 800));
 
     $('#npcp_tpl_save').on('click', dedupe(function () {
         const n = saveNpcTemplate();

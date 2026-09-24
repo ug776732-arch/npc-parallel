@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "ZCode",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "homePage": "https://github.com/ug776732-arch/npc-parallel",
     "auto_update": true
 }
