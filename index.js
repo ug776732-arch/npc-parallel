@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.2
+// SillyTavern 前端扩展 · v1.0.3
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.2';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.3';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -1728,6 +1728,11 @@ function buildPresencePrompt(names, mainText, wantDiscover) {
 function parsePresence(raw, names) {
     const map = {};
     for (const line of String(raw || '').split(/\r?\n/)) {
+        // 【v1.0.3】跳过第二部分（新人物）与"部分标题"行：
+        // 「名字｜简介｜备注」里的备注若出现"在场/离场"会被误当成判定行（污染解析计数）。
+        if (/[｜|]/.test(line)) continue;
+        if (/[【\[]\s*第[一二]部分/.test(line)) continue;
+        if (/^\s*新人物\s*[：:]/.test(line)) continue;
         const m = line.match(/在场|离场/);
         if (!m) continue;
         const status = m[0];
@@ -1737,7 +1742,10 @@ function parsePresence(raw, names) {
             .replace(/[\s：:，,。.（(【\[\]）)】"'"'"]+$/g, '')
             .trim();
         if (!namePart || namePart.length > 30) continue;
-        const hit = names.find(n => n === namePart || namePart.includes(n) || n.includes(namePart));
+        // 先精确匹配；再做模糊匹配 —— 名单名必须 ≥2 字才参与包含匹配，
+        // 否则形如名单里的单字"王"会被"王铁柱：离场"命中，导致误判。
+        const hit = names.find(n => n === namePart)
+            || names.find(n => n.length >= 2 && (namePart.includes(n) || n.includes(namePart)));
         if (hit && !map[hit]) map[hit] = status;
     }
     return map;
@@ -1758,9 +1766,12 @@ async function detectPresence(targets, mainText, signal = null, wantDiscover = f
     }
     if (!String(mainText || '').trim()) return result;
 
-    const prompt = buildPresencePrompt(need.map(n => n.name), mainText, wantDiscover);
-    const raw = await llmGenerate(prompt, Math.min(wantDiscover ? 700 : 400, num(s.responseTokens, 1400, 200, 8000)), wantDiscover ? '在场判定+人物识别' : '在场判定', signal);
-    const map = parsePresence(raw, need.map(n => n.name));
+    const names = need.map(n => n.name);
+    const prompt = buildPresencePrompt(names, mainText, wantDiscover);
+    // 【v1.0.3】输出预算按人数放大：上限过低会让判定输出被截断 → 解析不到 → 全都生成
+    const presTokens = Math.min(1600, Math.max(wantDiscover ? 700 : 400, names.length * 30 + (wantDiscover ? 500 : 120)));
+    const raw = await llmGenerate(prompt, Math.min(presTokens, num(s.responseTokens, 1400, 200, 8000)), wantDiscover ? '在场判定+人物识别' : '在场判定', signal);
+    const map = parsePresence(raw, names);
     const matched = Object.keys(map).length;
     const present = new Set(Object.entries(map).filter(([, v]) => v === '在场').map(([k]) => k));
 
@@ -1776,12 +1787,16 @@ async function detectPresence(targets, mainText, signal = null, wantDiscover = f
         } catch (e) { addLog('warn', '人物识别解析失败（忽略）：' + (e?.message || e)); }
     }
 
-    if (matched < Math.ceil(need.length / 2)) {
-        addLog('warn', `在场判定解析失败（仅识别 ${matched}/${need.length} 名NPC），本轮按离场全部生成`);
+    // 【v1.0.3】判定结果一旦解析到就生效 —— 不再"识别数不足一半就全员生成"。
+    // 旧逻辑在模型只判了一部分人（或输出较长被截断）时直接放弃判定，用户看到的就是"判了也照样生成"。
+    const unknowns = names.filter(n => !map[n]);
+    if (!matched) {
+        addLog('warn', `在场判定没有解析到任何结果，本轮按"全员离场"全部生成。模型返回片段：${String(raw || '').slice(0, 200).replace(/\s+/g, ' ')}`);
         result.present = new Set();
         return result;
     }
-    addLog('info', `在场判定完成（识别 ${matched}/${need.length}）：${present.size ? `在场跳过 → ${[...present].join('、')}` : '全员离场，全部生成'}`);
+    const absent = Object.keys(map).filter(k => map[k] === '离场');
+    addLog('info', `在场判定完成（解析到 ${matched}/${names.length} 名）：在场（跳过生成）${present.size ? [...present].join('、') : '无'}；离场（本轮生成）${absent.length ? absent.join('、') : '无'}${unknowns.length ? `；未识别（按离场处理）${unknowns.join('、')}` : ''}`);
     result.present = present;
     return result;
 }
@@ -2024,6 +2039,7 @@ function mainTextOf(mes) {
 
 // ------------------------------ 主流程 ------------------------------
 let isRunning = false;
+let runStarting = false;   // 【v1.0.3】启动阶段的同步占位锁（防"自动+手动"并发双轮）
 let cancelRequested = false;
 let scheduledTimer = null;
 let activeAbort = null;
@@ -2152,32 +2168,44 @@ async function runGeneration(filterNames) {
         toastr.warning('平行视角补写正在进行中，请稍候');
         return;
     }
+    // 【v1.0.3】同步占位锁：下面有一次 await（统计正文 token），期间若被再次触发
+    //（自动补写 + 手动点击、或两条回复接连到达），会出现两轮并发 ——
+    // 后一轮会先清空再重写折叠块，用户看到的就是"在场判定像没生效"。
+    if (runStarting) {
+        toastr.warning('平行视角补写正在启动中，请稍候');
+        return;
+    }
+    runStarting = true;
 
     const s = settings();
-    if (!s.enabled) {
-        toastr.warning('扩展已停用，请先在扩展设置中启用');
-        return;
-    }
-
     const ctx = getContext();
-    const chat = ctx.chat;
-    if (!Array.isArray(chat) || chat.length === 0) {
-        toastr.warning('当前没有聊天记录');
-        return;
-    }
-    const mesId = findLastAiMesId(chat);
-    if (mesId < 0) {
-        toastr.warning('没有可用的 AI 回复消息');
-        return;
-    }
- // 正文 token 防护（防道歉/审核拦截等异常短回复触发生成与记忆）
- // 用完整正文算 token（原来用被 mainTextLimit 截断的文本，会与阈值冲突导致永远跳过）
-    const guardText = extractMainTextPlain(chat[mesId]);
-    if (await shouldSkipGeneration(guardText)) {
-        setStatus('本轮正文过短，已跳过生成');
-        setProgress('⏭ 本轮正文低于 ' + s.minGenTokens + ' token，已跳过生成与记忆写入');
-        if (s.notify) toastr.info(`正文低于 ${s.minGenTokens} token，已跳过平行视角生成与记忆写入`);
-        return;
+    const chat = ctx && ctx.chat;
+    let mesId = -1;
+    try {
+        if (!s.enabled) {
+            toastr.warning('扩展已停用，请先在扩展设置中启用');
+            return;
+        }
+        if (!Array.isArray(chat) || chat.length === 0) {
+            toastr.warning('当前没有聊天记录');
+            return;
+        }
+        mesId = findLastAiMesId(chat);
+        if (mesId < 0) {
+            toastr.warning('没有可用的 AI 回复消息');
+            return;
+        }
+     // 正文 token 防护（防道歉/审核拦截等异常短回复触发生成与记忆）
+     // 用完整正文算 token（原来用被 mainTextLimit 截断的文本，会与阈值冲突导致永远跳过）
+        const guardText = extractMainTextPlain(chat[mesId]);
+        if (await shouldSkipGeneration(guardText)) {
+            setStatus('本轮正文过短，已跳过生成');
+            setProgress('⏭ 本轮正文低于 ' + s.minGenTokens + ' token，已跳过生成与记忆写入');
+            if (s.notify) toastr.info(`正文低于 ${s.minGenTokens} token，已跳过平行视角生成与记忆写入`);
+            return;
+        }
+    } finally {
+        runStarting = false;
     }
 
  // 提前进入"运行中"状态——世界书同步与人物识别阶段同样可被「停止」中断
@@ -2289,6 +2317,11 @@ async function runGeneration(filterNames) {
                 addLog('error', `在场判定请求失败（继续全部生成）：${err?.message || err}`);
             }
         }
+
+        // 【v1.0.3】免检（always）的人不参与判定、每轮都会生成 —— 写进日志，
+        // 避免用户以为"判定没生效"。
+        const exempt = targets.filter(n => n.always).map(n => n.name.trim());
+        if (exempt.length) addLog('info', `免检（不参与在场判定，始终生成）：${exempt.join('、')}`);
 
         if (!targets.length) {
             const msg = '所有目标NPC均在本回合场景中（在场），本轮跳过生成';
@@ -3702,7 +3735,7 @@ async function regenerateFromUI(npcName, mesId, onProgress) {
         const ca = settings().customApi || {};
         const eps = ensureEndpoints().filter(ep => ep.enabled !== false && String(ep.url || '').trim());
         const channel = (ca.enabled && eps.length) ? ('自定义API（' + eps.length + ' 个可用端点）') : '酒馆主API';
-        addLog('info', '开始重新生成「' + npcName + '」（第 ' + mesId + ' 楼），通道：' + channel);
+        addLog('info', '开始重新生成「' + npcName + '」（第 ' + mesId + ' 楼），通道：' + channel + '；注意：手动重生成不经过在场判定（在场者也会生成）');
         if (onProgress) onProgress('正在重新生成「' + npcName + '」（第 ' + mesId + ' 楼）· ' + channel + '…');
     } catch (e) { /* ignore */ }
     try {
