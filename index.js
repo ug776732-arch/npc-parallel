@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.3
+// SillyTavern 前端扩展 · v1.0.4
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.3';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.4';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -236,6 +236,7 @@ const DEFAULTS = {
     debreakLevel: 'full',      // 创作语境声明强度：light=简洁 / full=完整
     ignoredNpcs: [],            // 用户明确拒绝的人物（不再作为候选提示）
     batchGenerate: true,        // 多名NPC合并成一次调用（按次计费的API很省次数）
+    factsRef: true,             // 【v1.0.4】逐个生成时注入"本回合已生成角色的平行视角"作事实对齐（减少同回合跨角色矛盾）
     wbMode: 'char',             // 世界书绑定方式：char=角色卡绑定 / chat=聊天绑定 / manual=手动指定 / all=全部
     wbManual: '',               // 手动指定的世界书名称
 };
@@ -1603,7 +1604,83 @@ function buildNpcListText(selfName) {
     if (!names.length) return '（名单为空，本段只能写 ' + selfName + ' 一人的内心）';
     return names.map(n => n === selfName ? '★' + n + '（本轮视角人物）' : '· ' + n).join('\n');
 }
-function buildPrompt(npc, mainText, prevText) {
+// ------------------------------ 同回合事实参考（v1.0.4） ------------------------------
+// 逐个生成（关掉批量）时，每位 NPC 都是独立 API 调用；自定义通道还会把折叠块从历史里剥掉，
+// 于是同一回合的各段平行视角互相看不见 → 同一件事/同一地点各写一套，甚至互相矛盾。
+// 这里把「本楼本回合已经生成好的其它角色段落」作为共同事实参考注入（只用于事实对齐）。
+const FACTS_REF_PER_NPC = 800;    // 每个角色最多注入的字符数
+const FACTS_REF_TOTAL = 4000;     // 参考段整体最大字符数
+const FACTS_REF_MAX_PEOPLE = 6;   // 最多参考几个角色
+
+// 收集本楼"已经生成好"的平行视角段落（以 message.extra 为准，旧消息从文本兜底）
+function collectRoundFacts(chat, mesId, excludeName) {
+    const out = [];
+    const seen = new Set();
+    const mes = chat && chat[mesId];
+    if (!mes) return out;
+    let arr = Array.isArray(mes.extra?.[MODULE]) ? mes.extra[MODULE] : null;
+    if (!arr || !arr.length) {
+        if (/npcp:start/.test(String(mes.mes || ''))) arr = parseBlocksFromText(mes.mes);
+    }
+    const ex = String(excludeName || '').trim();
+    (arr || []).forEach(e => {
+        const name = String(e?.name || '').trim();
+        const text = String(e?.text || '').trim();
+        if (!name || !text) return;
+        if (ex && name === ex) return;
+        if (seen.has(name)) return;
+        seen.add(name);
+        out.push({ name, text });
+    });
+    return out;
+}
+
+// 纯函数（便于单测）：facts = [{name, text}] → 提示词片段；'' 表示不注入
+function formatFactsReference(facts, opts = {}) {
+    const list = (Array.isArray(facts) ? facts : []).filter(f => f && f.name && String(f.text || '').trim());
+    if (!list.length) return '';
+    const perMax = Math.max(120, num(opts.perMax, FACTS_REF_PER_NPC, 120, 4000));
+    const totalMax = Math.max(400, num(opts.totalMax, FACTS_REF_TOTAL, 400, 20000));
+    const maxPeople = Math.max(1, num(opts.maxPeople, FACTS_REF_MAX_PEOPLE, 1, 20));
+    const parts = [
+        '',
+        '════════ 本轮同回合·其它角色已发生的事实（只用于事实对齐，不是你角色的情报）════════',
+        '【铁律】',
+        '- 下面每一段都是本回合同一时间线上、其它角色身上已经发生的平行事件。',
+        '- 只用它对齐事实：若你角色与其中某人在同一时间、同一地点，那处发生的事必须写成同一件事的相容版本（谁在场、发生了什么、结果如何都要对得上），不得出现互相矛盾的第二个版本。',
+        '- 它们没写到的地方照常自由发挥；不要复述、不要照抄别人的段落。',
+        '- 你写的角色不得知晓这些段落里属于别人私下经历/私下知情的内容 —— 本角色的观感与认知仍严格服从上面的信息隔离规则。',
+    ];
+    let used = 0;
+    for (const f of list.slice(-maxPeople)) {
+        let t = String(f.text).trim();
+        if (t.length > perMax) {
+            const head = Math.round(perMax * 0.6), tail = Math.max(0, perMax - head);
+            t = t.slice(0, head) + '\n……（中间略）……\n' + (tail ? t.slice(-tail) : '');
+        }
+        const seg = `【${f.name}】\n${t}`;
+        if (used + seg.length > totalMax) break;
+        used += seg.length;
+        parts.push(seg);
+    }
+    if (parts.length <= 7) return '';   // 一个人都没塞进去
+    parts.push('');
+    return parts.join('\n');
+}
+
+// 生成前按设置取参考片段（开关关闭 / 本回合还没有其它角色 → 返回 ''）
+function factsReferenceFor(chat, mesId, excludeName) {
+    if (settings().factsRef === false) return '';
+    try {
+        const facts = collectRoundFacts(chat, mesId, excludeName);
+        if (!facts.length) return '';
+        const text = formatFactsReference(facts);
+        if (text) addLog('info', `事实参考：已注入本回合已生成的 ${facts.length} 名角色（${facts.map(f => f.name).join('、')}）`);
+        return text;
+    } catch (e) { return ''; }
+}
+
+function buildPrompt(npc, mainText, prevText, factsText = '') {
     const s = settings();
     const pov = effectivePov();
     let filled = fill(s.template, {
@@ -1622,10 +1699,12 @@ function buildPrompt(npc, mainText, prevText) {
     try {
         const out = substituteParams(filled); // 剩余 {{user}}/{{char}} 等酒馆宏
  // 创作语境声明前置（仅在生成平行视角时生效）
- // 末尾追加人称强制块（修复"选了第三人称却写出第一人称"）
-        return applyContextNotice(out + povHardBlock(npc.name));
+ // 同回合事实参考（可关）：放在人称强制块之前，保证人称指令仍留在最末尾
+        const facts = String(factsText || '').trim();
+        return applyContextNotice(out + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
     } catch {
-        return applyContextNotice(filled + povHardBlock(npc.name));
+        const facts = String(factsText || '').trim();
+        return applyContextNotice(filled + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
     }
 }
 
@@ -2152,7 +2231,9 @@ function stopGeneration() {
 async function generateForNpc(npc, chat, mesId, signal) {
     const mainText = extractMainText(chat[mesId]);
     const prev = findPrevEntry(chat, npc.name, mesId - 1);
-    const prompt = buildPrompt(npc, mainText, prev);
+    // 【v1.0.4】把本回合已生成的其它角色平行视角作为共同事实参考（可在「API」页关闭）
+    const facts = factsReferenceFor(chat, mesId, npc.name);
+    const prompt = buildPrompt(npc, mainText, prev, facts);
     const raw = await llmGenerate(prompt, settings().responseTokens, `平行视角·${npc.name}`, signal);
     const { text, info, povLabel } = parseOutput(raw, npc.name);
     if (!text) throw new Error('模型未返回有效正文');
@@ -3709,9 +3790,11 @@ async function regenerateNpcAtMessage(npcName, mesId, signal = null, onProgress 
 
  // 前文改回零成本来源（上一楼该 NPC 的正文结尾状态）
     const prev = findPrevEntry(chat, npcName, mesId - 1);
+    // 【v1.0.4】同楼其它角色的段落也作为事实参考，让重做的这一段与同回合对齐
+    const regenFacts = factsReferenceFor(chat, mesId, npcName);
 
     if (onProgress) onProgress(`正在重新生成「${npcName}」（第 ${mesId} 楼）…`);
-    const prompt = buildPrompt(npc, mainText, prev);
+    const prompt = buildPrompt(npc, mainText, prev, regenFacts);
     const raw = await llmGenerate(prompt, s.responseTokens, `重生成·${npcName}`, signal);
     const { text, info } = parseOutput(raw, npcName);
     if (!text) throw new Error('模型未返回有效正文');
@@ -3910,6 +3993,10 @@ function addSettingsUI() {
                         <label class="npcp-check-row" for="npcp_batch" title="按次计费的API：把本轮所有离场NPC合并成一次调用，极大节省次数">
                             <input id="npcp_batch" type="checkbox">
                             <span>批量生成（N名NPC合并为1次调用 · 按次计费推荐）</span>
+                        </label>
+                        <label class="npcp-check-row" for="npcp_facts_ref" title="逐个生成时，把本轮已生成的其它角色平行视角作为「共同事实参考」注入，避免同一件事/同一地点出现互相矛盾的版本">
+                            <input id="npcp_facts_ref" type="checkbox">
+                            <span>同回合事实对齐（逐个生成时参考已生成的其他角色 · 减少跨角色矛盾）</span>
                         </label>
                         <label class="npcp-check-row" for="npcp_stream">
                             <input id="npcp_stream" type="checkbox">
@@ -5588,6 +5675,7 @@ function syncSettingsUI() {
     $('#npcp_notify').prop('checked', !!s.notify);
     $('#npcp_debreak').prop('checked', s.debreakEnabled !== false);
     $('#npcp_batch').prop('checked', s.batchGenerate !== false);
+    $('#npcp_facts_ref').prop('checked', s.factsRef !== false);
     try { updateRetryButton(); } catch (e) { /* ignore */ }
     $('#npcp_debreak_lvl').val(s.debreakLevel || 'full');
     $('#npcp_skip_present').prop('checked', !!s.skipPresent);
@@ -5683,6 +5771,7 @@ function bindSettingsUI() {
 
     $('#npcp_retry_failed').on('click', dedupe(function () { retryFailedNpcs().catch(e => console.error('[npc-parallel] 重试失败', e)); }, 500));
     $('#npcp_batch').on('change', function () { settings().batchGenerate = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#npcp_facts_ref').on('change', function () { settings().factsRef = $(this).prop('checked'); saveSettingsDebounced(); });
     $('#npcp_clear').on('click', function () {
         clearBlocks().catch(err => console.error('[npc-parallel] 清除失败', err));
     });
