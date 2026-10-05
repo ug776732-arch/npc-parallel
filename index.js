@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.4
+// SillyTavern 前端扩展 · v1.0.5
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.4';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.5';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -1680,6 +1680,24 @@ function factsReferenceFor(chat, mesId, excludeName) {
     } catch (e) { return ''; }
 }
 
+// ------------------------------ 公共事实一致性（v1.0.5） ------------------------------
+// 为什么不写进默认模板：模板是"用户可编辑且存在设置里"的 —— 改 DEFAULT_TEMPLATE 只影响新装用户，
+// 老用户本地保存的旧模板不会更新。因此这里做成"代码追加块"（同 povHardBlock 的做法），
+// 对所有用户、所有模式（批量 / 逐个 / 单条重生成）一律生效。
+function publicFactsBlock(npcName) {
+    const who = npcName || '该人物';
+    return [
+        '',
+        '════════ 公共事实一致性（与主正文同等权重的硬约束）════════',
+        '- 以本轮主正文为唯一事实来源：主正文里已经写明的公共事件（谁在场、说了什么、发生了什么、结果如何），必须完全一致，不得改写成另一个版本。',
+        '- 你只能自由发明「私人性质」的内容：' + who + '独处时的行为与心事、私下收到的消息、别人看不到的小动作与判断。',
+        '- 禁止凭空发明「公共可见」的新事实：当众冲突、街头/店内变故、多人围观的场面、公开宣告之类，除非本轮主正文或本轮其它角色的平行段里已经发生。',
+        '- 若你与其它角色的平行段落在同一时间、同一地点：那处发生的公共事件必须是同一件事的相容版本（谁在场、发生了什么、结果如何都要对得上），不得各写一套。',
+        '- 违反了上面任何一条，都视为本段失败。',
+        '',
+    ].join('\n');
+}
+
 function buildPrompt(npc, mainText, prevText, factsText = '') {
     const s = settings();
     const pov = effectivePov();
@@ -1699,12 +1717,12 @@ function buildPrompt(npc, mainText, prevText, factsText = '') {
     try {
         const out = substituteParams(filled); // 剩余 {{user}}/{{char}} 等酒馆宏
  // 创作语境声明前置（仅在生成平行视角时生效）
- // 同回合事实参考（可关）：放在人称强制块之前，保证人称指令仍留在最末尾
+ // 顺序：正文 → 公共事实一致性 → 同回合事实参考（可关）→ 人称强制块（保持最末尾）
         const facts = String(factsText || '').trim();
-        return applyContextNotice(out + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
+        return applyContextNotice(out + publicFactsBlock(npc.name) + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
     } catch {
         const facts = String(factsText || '').trim();
-        return applyContextNotice(filled + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
+        return applyContextNotice(filled + publicFactsBlock(npc.name) + (facts ? '\n' + facts : '') + povHardBlock(npc.name));
     }
 }
 
@@ -1982,6 +2000,8 @@ function buildBatchPrompt(targets, mainText, chat, mesId) {
     parts.push('所有 NPC 都必须输出，一位都不能少；标签外不要输出任何内容。');
  // 总篇幅约束（防止超长被截断导致"缺人 → 回退逐个生成 → 多花调用次数"）
     parts.push(`【总篇幅】本轮共 ${targets.length} 位，每位约 ${s.minWords}-${s.maxWords} 字，总输出请控制在 ${targets.length * s.maxWords} 字以内，务必完整输出每一位。`);
+ // 【v1.0.5】公共事实一致性（批量模式同样生效：禁止各自发明互相冲突的公共事件）
+    parts.push(publicFactsBlock('名单中的每一位人物'));
  // 末尾追加人称强制块
     parts.push(povHardBlock('名单中的每一位人物'));
     return parts.join('\n');
@@ -5362,6 +5382,10 @@ function clearMobileOpenStyle() {
         fab.style.cssText = '';
         try {
             if (isMobileUI()) applyMobileFabStyle();
+            // 【v1.0.5 修复】桌面端必须把"拖拽后保存的位置"重新写回内联样式 ——
+            // 上面 cssText='' 会把悬浮球的内联坐标一起抹掉，而 openPanel/closePanel 都会调用本函数，
+            // 于是"拖动完一开面板/一关面板，球就弹回默认位置"。
+            else restoreFabPos();
         } catch (e) { /* ignore */ }
     }
 }
