@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.5
+// SillyTavern 前端扩展 · v1.0.6
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.5';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.6';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -2143,6 +2143,7 @@ let cancelRequested = false;
 let scheduledTimer = null;
 let activeAbort = null;
 let lastFabTapTs = 0;
+let lastFabDragEndTs = 0;   // 【v1.0.6】悬浮球最近一次"拖拽结束"时间（用于屏蔽拖拽后浏览器补发的 click）
 let lastTouchEventTs = 0;   // 最近一次触摸事件时间（用于忽略触摸产生的幽灵 click） // 悬浮球开关防抖（模块级，避免作用域问题） // 本轮生成的 AbortController（点「停止」时触发）
 
 // 把酒馆里的世界书填充到「手动选择世界书」下拉，返回数量
@@ -4153,10 +4154,10 @@ function addSettingsUI() {
     applyTheme();
     try { buildPanelTabs(); } catch (e) { console.warn('[npc-parallel] 分栏构建失败（面板仍可用）', e); }
     try { bindReviewDialog(); updateReviewBadge(); } catch (e) { console.warn('[npc-parallel] 审核窗绑定失败', e); }
-    restoreFabPos();
     bindFloating();
- // 手机端加载后立即用内联样式锚定悬浮球到屏幕顶部（顶部永远可见）
-    try { if (isMobileUI()) applyMobileFabStyle(); } catch (e) { console.warn('[npcp] 悬浮球锚定失败', e); }
+    // 【v1.0.6】加载时恢复"拖拽保存的位置"（没有保存则用样式表默认），并夹进可见视口。
+    // 旧逻辑在手机模式（含触摸屏笔记本窄窗口）下会强制锚定顶部 → 用户拖过的位置每次加载都被丢弃。
+    try { applyFabPos(); } catch (e) { console.warn('[npcp] 悬浮球定位失败', e); }
     syncRunButton();
 }
 
@@ -5148,10 +5149,10 @@ function isMobileUI() {
     } catch (e) { return false; }
 }
 
-// ------------------------------ 手机端悬浮球锚定 ------------------------------
-// 关键发现：部分手机浏览器与酒馆组合下，页面「布局视口」比可见区域更高
-//（底部被系统导航栏/地址栏遮挡），用 bottom 定位的悬浮球会落在看不见的区域。
-// 因此手机端改为锚定「屏幕顶部」（顶部永远可见）。
+// ------------------------------ 手机端悬浮球锚定（v1.0.6 起已停用） ------------------------------
+// 【历史】部分手机浏览器"布局视口 > 可见区域"，用 bottom 定位的球会落到看不见的地方，
+// 于是旧版在手机端把球强制锚定到屏幕顶部、并禁止拖动。
+// 【v1.0.6 现状】改为"自由拖拽 + 夹进可见视口"（clampFabIntoView），本函数不再被调用，仅作回退备用。
 function applyMobileFabStyle() {
     const fab = document.getElementById('npcp_fab');
     if (!fab) return;
@@ -5275,7 +5276,7 @@ function applyMobileOpenStyle() {
             }
         } catch (e) { /* ignore */ }
     }
-    if (fab) { applyMobileFabStyle(); }
+    if (fab) { try { applyFabPos(); } catch (e) { /* ignore */ } }
     if (overlay) {
         overlay.style.setProperty('position', 'fixed', 'important');
         overlay.style.setProperty('left', '0', 'important');
@@ -5380,13 +5381,8 @@ function clearMobileOpenStyle() {
     const fab = document.getElementById('npcp_fab');
     if (fab) {
         fab.style.cssText = '';
-        try {
-            if (isMobileUI()) applyMobileFabStyle();
-            // 【v1.0.5 修复】桌面端必须把"拖拽后保存的位置"重新写回内联样式 ——
-            // 上面 cssText='' 会把悬浮球的内联坐标一起抹掉，而 openPanel/closePanel 都会调用本函数，
-            // 于是"拖动完一开面板/一关面板，球就弹回默认位置"。
-            else restoreFabPos();
-        } catch (e) { /* ignore */ }
+        // 【v1.0.6】桌面 / 手机一律恢复「拖拽保存的位置」（不再把球钉回右上角）
+        try { applyFabPos(); } catch (e) { /* ignore */ }
     }
 }
 
@@ -5489,12 +5485,8 @@ function bindFloating() {
                 togglePanel();
             },
             onDragEnd: (pos) => {
- // 手机端不允许自由定位——拖拽结束后重新锚定到屏幕顶部，
-                // 否则会被改成 bottom 定位，在"布局视口高于可见区域"的手机上落到看不见的地方。
-                if (isMobileUI()) {
-                    try { applyMobileFabStyle(); } catch (e) { /* ignore */ }
-                    return;
-                }
+                // 【v1.0.6】所有平台都保存拖拽位置 —— 旧版在"手机模式"下直接丢弃并锚回顶部，
+                // 用户看到的就是"拖完松手球自己弹回原位（甚至被钉到屏幕顶部）"。
                 settings().fabPos = pos;
                 saveSettingsDebounced();
             },
@@ -5508,6 +5500,9 @@ function bindFloating() {
             const now = Date.now();
             // 触摸产生的"幽灵 click"一律忽略（触摸链路已经处理过开关）
             if (now - lastTouchEventTs < 900) return;
+            // 【v1.0.6】刚拖拽过：mouseup 之后浏览器仍会补发一个 click，
+            // 别把它当点击 —— 否则"拖完松手就自动打开面板"。
+            if (now - lastFabDragEndTs < 500) return;
             if (now - lastFabTapTs < 400) return;
             lastFabTapTs = now;
             e.preventDefault();
@@ -5550,7 +5545,7 @@ function bindFloating() {
     ctlTap('#npcp_minimize', closePanel);
     // 窗口尺寸变化时，若未手动拖拽过，则重新贴球
     $(window).off('resize.npcp orientationchange.npcp').on('resize.npcp orientationchange.npcp', () => {
-        try { if (isMobileUI()) applyMobileFabStyle(); } catch (e) { /* ignore */ }
+        try { applyFabPos(); } catch (e) { /* ignore */ }
         try { clampPanelToViewport(); } catch (e) { /* ignore */ }
         if (!settings().panelPos && $('#npcp_floating').hasClass('open')) positionPanelNearFab();
     });
@@ -5627,40 +5622,37 @@ function makeDraggable(el, opts) {
         if (isGhostMouse(e)) { dragging = false; return; }
         if (!dragging) return;
         dragging = false;
- // 手机端悬浮球已锚定在右上角（拖拽无意义），
-        // 且手指点按天然会有 10~30px 抖动 —— 因此手机端任何手势都按"点击"处理，
-        // 否则轻点会被误判成拖拽 → 面板不打开、球也不动 → 表现为"点了没反应"。
-        const mobileMode = (typeof isMobileUI === 'function') && isMobileUI();
-        const isTap = mobileMode ? true : (maxDist <= TAP_DIST);
+ // 【v1.0.6】所有平台统一按"位移"判断点击 / 拖拽。
+        // 旧逻辑在"手机模式"（innerWidth ≤ 820，或触摸设备 ≤ 1024）下把任何手势都当点击，
+        // 并把悬浮球钉回右上角 —— 表现为"拖完松手自动打开面板、球又弹回原位"。
+        const isTap = maxDist <= TAP_DIST;
         if (isTap) {
-            // 手机端：无论有没有位移，都重新执行顶部锚定（球固定在右上角，不允许被拖走）
-            if (mobileMode) {
-                try { applyMobileFabStyle(); } catch (err) { /* ignore */ }
-            } else if (!moved) {
-                // 只是点击（没真的拖动）：撤销 onDown 写入的临时内联定位
-                // 手机端必须重新执行顶部锚定（锚定本身也是内联样式，直接删掉会退回 CSS 的 bottom 定位→球消失）
-                try {
-                    if (typeof isMobileUI === 'function' && isMobileUI()) {
-                        applyMobileFabStyle();
-                    } else {
-                        target.style.removeProperty('left');
-                        target.style.removeProperty('top');
-                    }
-                } catch (err) {
-                    target.style.removeProperty('left');
-                    target.style.removeProperty('top');
-                }
+            // 点击：撤销 onDown 写入的临时定位 → 回到保存的位置（无保存则回样式表默认）
+            try {
+                if (opts.mode === 'fab') applyFabPos();
+                else { target.style.removeProperty('left'); target.style.removeProperty('top'); }
+            } catch (err) {
+                target.style.removeProperty('left');
+                target.style.removeProperty('top');
             }
             opts.onTap && opts.onTap(e);
             return;
         }
         const rect = target.getBoundingClientRect();
         if (opts.mode === 'fab') {
-            const right = Math.max(0, window.innerWidth - rect.right);
-            const bottom = Math.max(0, window.innerHeight - rect.bottom);
-            target.style.left = 'auto'; target.style.top = 'auto';
-            target.style.right = right + 'px'; target.style.bottom = bottom + 'px';
-            opts.onDragEnd && opts.onDragEnd({ right, bottom });
+            // 夹进可见视口后保存（防止拖到屏幕外找不回来）
+            const w = rect.width || 46, h = rect.height || 46;
+            const right = Math.min(Math.max(0, window.innerWidth - rect.right), Math.max(0, window.innerWidth - w));
+            const bottom = Math.min(Math.max(0, window.innerHeight - rect.bottom), Math.max(0, window.innerHeight - h));
+            try {
+                target.style.setProperty('left', 'auto', 'important');
+                target.style.setProperty('top', 'auto', 'important');
+                target.style.setProperty('right', Math.round(right) + 'px', 'important');
+                target.style.setProperty('bottom', Math.round(bottom) + 'px', 'important');
+            } catch (err) { /* ignore */ }
+            // 拖拽结束后浏览器仍可能补发一个 click —— 记时间戳，让 click 兜底忽略它
+            lastFabDragEndTs = Date.now();
+            opts.onDragEnd && opts.onDragEnd({ right: Math.round(right), bottom: Math.round(bottom) });
         } else {
             opts.onDragEnd && opts.onDragEnd({ left: rect.left, top: rect.top });
         }
@@ -5686,10 +5678,60 @@ function restorePanelPos() {
 }
 
 function restoreFabPos() {
+    applyFabPos();
+}
+
+// 【v1.0.6】悬浮球定位统一入口：恢复"拖拽保存的位置"，并保证它落在可见视口内。
+// 之前的问题：① clearMobileOpenStyle 里的 cssText='' 会抹掉坐标；② 手机模式把球钉在顶部；
+//             ③ 样式表里手机断点写了 `right/bottom !important`，所以这里必须用内联 !important 才能压住。
+function applyFabPos() {
+    const fab = document.getElementById('npcp_fab');
+    if (!fab) return;
     const p = settings().fabPos;
-    if (p && typeof p.right === 'number' && typeof p.bottom === 'number') {
-        $('#npcp_fab').css({ right: p.right + 'px', bottom: p.bottom + 'px', left: 'auto', top: 'auto' });
+    const has = p && typeof p.right === 'number' && typeof p.bottom === 'number';
+    // 先清掉所有定位（含旧逻辑写过的 !important），再按需写回
+    ['left', 'top', 'right', 'bottom'].forEach(k => { try { fab.style.removeProperty(k); } catch (e) { /* ignore */ } });
+    if (has) {
+        try {
+            fab.style.setProperty('right', Math.max(0, Math.round(p.right)) + 'px', 'important');
+            fab.style.setProperty('bottom', Math.max(0, Math.round(p.bottom)) + 'px', 'important');
+            fab.style.setProperty('left', 'auto', 'important');
+            fab.style.setProperty('top', 'auto', 'important');
+        } catch (e) { /* ignore */ }
     }
+    clampFabIntoView();
+}
+
+// 把悬浮球夹回"可见视口"（手机浏览器存在"布局视口 > 可见区域"的情况，bottom 定位会落到看不见的地方）
+function clampFabIntoView() {
+    const fab = document.getElementById('npcp_fab');
+    if (!fab) return;
+    const rect = fab.getBoundingClientRect();
+    // 没有布局信息（隐藏 / 测试环境）时不夹，避免写出错误坐标
+    if (!rect.width && !rect.height) return;
+    const vv = window.visualViewport;
+    const vw = Math.round((vv && vv.width) || window.innerWidth || 0);
+    const vh = Math.round((vv && vv.height) || window.innerHeight || 0);
+    const ox = Math.round((vv && vv.offsetLeft) || 0);
+    const oy = Math.round((vv && vv.offsetTop) || 0);
+    if (!vw || !vh) return;
+    const w = rect.width || 46, h = rect.height || 46;
+    const M = 6;
+    const wantLeft = Math.min(Math.max(ox + M, rect.left), Math.max(ox + M, ox + vw - w - M));
+    const wantTop = Math.min(Math.max(oy + M, rect.top), Math.max(oy + M, oy + vh - h - M));
+    if (Math.abs(wantLeft - rect.left) < 1 && Math.abs(wantTop - rect.top) < 1) return;
+    try {
+        fab.style.setProperty('left', Math.round(wantLeft) + 'px', 'important');
+        fab.style.setProperty('top', Math.round(wantTop) + 'px', 'important');
+        fab.style.setProperty('right', 'auto', 'important');
+        fab.style.setProperty('bottom', 'auto', 'important');
+    } catch (e) { /* ignore */ }
+    // 同步保存，避免下次 restore 又回到越界位置
+    settings().fabPos = {
+        right: Math.max(0, Math.round((window.innerWidth || vw) - (wantLeft + w))),
+        bottom: Math.max(0, Math.round((window.innerHeight || vh) - (wantTop + h))),
+    };
+    try { saveSettingsDebounced(); } catch (e) { /* ignore */ }
 }
 
 function syncSettingsUI() {
