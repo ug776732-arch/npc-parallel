@@ -5152,7 +5152,8 @@ function isMobileUI() {
 // ------------------------------ 手机端悬浮球锚定（v1.0.6 起已停用） ------------------------------
 // 【历史】部分手机浏览器"布局视口 > 可见区域"，用 bottom 定位的球会落到看不见的地方，
 // 于是旧版在手机端把球强制锚定到屏幕顶部、并禁止拖动。
-// 【v1.0.6 现状】改为"自由拖拽 + 夹进可见视口"（clampFabIntoView），本函数不再被调用，仅作回退备用。
+// 【v1.0.7 现状】改为"自由拖拽 + left/top 定位 + 布局视口夹取"（见 applyFabPos），
+// visualViewport 混算方案已删除（它正是"拖完球消失"的根因）。本函数不再被调用，仅作回退备用。
 function applyMobileFabStyle() {
     const fab = document.getElementById('npcp_fab');
     if (!fab) return;
