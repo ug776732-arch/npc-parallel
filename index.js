@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.6
+// SillyTavern 前端扩展 · v1.0.7
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.6';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.7';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -5220,6 +5220,13 @@ function showPanelDialog() {
     } catch (e) {
         try { dlg.setAttribute('open', ''); } catch (e2) { /* ignore */ }
     }
+    // 【v1.0.7】把悬浮球也挂进顶层 dialog：modal dialog 会挡住页面其余部分的指针事件，
+    // 不搬进来时"面板开着时拖/点悬浮球"实际落在 dialog 背景上 → 一次拖动就被当成点背景 → 面板被关掉。
+    // 悬浮球 z-index 高于面板，进来后依然浮在面板上方、可点可拖（点它=关闭面板）。
+    try {
+        const fab = document.getElementById('npcp_fab');
+        if (fab && fab.parentNode !== dlg) dlg.appendChild(fab);
+    } catch (e) { /* ignore */ }
 }
 
 function hidePanelDialog() {
@@ -5233,6 +5240,11 @@ function hidePanelDialog() {
         } else {
             dlg.removeAttribute('open');
         }
+    } catch (e) { /* ignore */ }
+    // 【v1.0.7】把悬浮球搬回 body（dialog 关闭后是 display:none，球留在里面会跟着消失）
+    try {
+        const fab = document.getElementById('npcp_fab');
+        if (fab && dlg.contains(fab)) document.body.appendChild(fab);
     } catch (e) { /* ignore */ }
 }
 function applyMobileOpenStyle() {
@@ -5600,8 +5612,18 @@ function makeDraggable(el, opts) {
         startX = p.clientX; startY = p.clientY;
         const rect = target.getBoundingClientRect();
         origLeft = rect.left; origTop = rect.top;
-        target.style.right = 'auto'; target.style.bottom = 'auto';
-        target.style.left = origLeft + 'px'; target.style.top = origTop + 'px';
+        // 【v1.0.7】拖拽结束 / applyFabPos 会写入内联 !important 定位，
+        // 普通的 style.right='auto' 压不住它 → 第二次拖拽开始"拖不动"。必须先移除再以 important 写入。
+        ['left', 'top', 'right', 'bottom'].forEach(k => { try { target.style.removeProperty(k); } catch (err) { /* ignore */ } });
+        try {
+            target.style.setProperty('right', 'auto', 'important');
+            target.style.setProperty('bottom', 'auto', 'important');
+            target.style.setProperty('left', origLeft + 'px', 'important');
+            target.style.setProperty('top', origTop + 'px', 'important');
+        } catch (err) {
+            target.style.right = 'auto'; target.style.bottom = 'auto';
+            target.style.left = origLeft + 'px'; target.style.top = origTop + 'px';
+        }
     };
     const onMove = (e) => {
         if (!dragging) return;
@@ -5612,8 +5634,14 @@ function makeDraggable(el, opts) {
         maxDist = Math.max(maxDist, Math.abs(dx), Math.abs(dy));
         if (maxDist > TAP_DIST) moved = true;
         if (moved) {
-            target.style.left = (origLeft + dx) + 'px';
-            target.style.top = (origTop + dy) + 'px';
+            // 【v1.0.7】同样用 important 写入（与 onDown/拖拽结束一致），保证拖动过程实时跟手
+            try {
+                target.style.setProperty('left', (origLeft + dx) + 'px', 'important');
+                target.style.setProperty('top', (origTop + dy) + 'px', 'important');
+            } catch (err) {
+                target.style.left = (origLeft + dx) + 'px';
+                target.style.top = (origTop + dy) + 'px';
+            }
             if (e.cancelable) e.preventDefault();
         }
     };
@@ -5640,20 +5668,29 @@ function makeDraggable(el, opts) {
         }
         const rect = target.getBoundingClientRect();
         if (opts.mode === 'fab') {
-            // 夹进可见视口后保存（防止拖到屏幕外找不回来）
+            // 【v1.0.7】改用 left/top 定位并夹进"布局视口"：
+            // ① 手机浏览器"布局视口比可见区域高"，bottom 定位会把球放到看不见的地方（顶部对齐永远可见）；
+            // ② v1.0.6 的 right/bottom + visualViewport 混算在浏览器缩放/触摸缩放下会把球送出屏幕（"拖完球消失"的根因）。
             const w = rect.width || 46, h = rect.height || 46;
-            const right = Math.min(Math.max(0, window.innerWidth - rect.right), Math.max(0, window.innerWidth - w));
-            const bottom = Math.min(Math.max(0, window.innerHeight - rect.bottom), Math.max(0, window.innerHeight - h));
+            const left = Math.min(Math.max(0, Math.round(rect.left)), Math.max(0, window.innerWidth - w));
+            const top = Math.min(Math.max(0, Math.round(rect.top)), Math.max(0, window.innerHeight - h));
             try {
-                target.style.setProperty('left', 'auto', 'important');
-                target.style.setProperty('top', 'auto', 'important');
-                target.style.setProperty('right', Math.round(right) + 'px', 'important');
-                target.style.setProperty('bottom', Math.round(bottom) + 'px', 'important');
+                target.style.setProperty('right', 'auto', 'important');
+                target.style.setProperty('bottom', 'auto', 'important');
+                target.style.setProperty('left', left + 'px', 'important');
+                target.style.setProperty('top', top + 'px', 'important');
             } catch (err) { /* ignore */ }
             // 拖拽结束后浏览器仍可能补发一个 click —— 记时间戳，让 click 兜底忽略它
             lastFabDragEndTs = Date.now();
-            opts.onDragEnd && opts.onDragEnd({ right: Math.round(right), bottom: Math.round(bottom) });
+            opts.onDragEnd && opts.onDragEnd({ left, top });
         } else {
+            // 【v1.0.7】面板模式：还原为普通内联样式 ——
+            // onDown 写入的是 !important，若不还原，restorePanelPos/positionPanelNearFab 的普通写入会失效
+            try {
+                ['left', 'top', 'right', 'bottom'].forEach(k => { try { target.style.removeProperty(k); } catch (err) { /* ignore */ } });
+                target.style.right = 'auto'; target.style.bottom = 'auto';
+                target.style.left = rect.left + 'px'; target.style.top = rect.top + 'px';
+            } catch (err) { /* ignore */ }
             opts.onDragEnd && opts.onDragEnd({ left: rect.left, top: rect.top });
         }
         try { clampPanelToViewport(); } catch (err) { /* ignore */ }
@@ -5681,57 +5718,41 @@ function restoreFabPos() {
     applyFabPos();
 }
 
-// 【v1.0.6】悬浮球定位统一入口：恢复"拖拽保存的位置"，并保证它落在可见视口内。
-// 之前的问题：① clearMobileOpenStyle 里的 cssText='' 会抹掉坐标；② 手机模式把球钉在顶部；
-//             ③ 样式表里手机断点写了 `right/bottom !important`，所以这里必须用内联 !important 才能压住。
+// 【v1.0.7】悬浮球定位统一入口（left/top 版）：
+// - 统一用 left/top（顶部对齐在任何设备上都可见），保存值也用 left/top；
+// - 夹取只按"布局视口"（window.innerWidth/innerHeight）计算，绝不混入 visualViewport ——
+//   v1.0.6 的 clampFabIntoView 把 visualViewport 坐标当布局坐标用，浏览器缩放/触摸缩放时
+//   会把球"夹"到屏幕外，还把错误位置存进设置 → 表现为"拖完球就消失"；
+// - 兼容旧版保存的 {right, bottom}：应用时换算成 left/top。
 function applyFabPos() {
     const fab = document.getElementById('npcp_fab');
     if (!fab) return;
-    const p = settings().fabPos;
-    const has = p && typeof p.right === 'number' && typeof p.bottom === 'number';
     // 先清掉所有定位（含旧逻辑写过的 !important），再按需写回
     ['left', 'top', 'right', 'bottom'].forEach(k => { try { fab.style.removeProperty(k); } catch (e) { /* ignore */ } });
-    if (has) {
-        try {
-            fab.style.setProperty('right', Math.max(0, Math.round(p.right)) + 'px', 'important');
-            fab.style.setProperty('bottom', Math.max(0, Math.round(p.bottom)) + 'px', 'important');
-            fab.style.setProperty('left', 'auto', 'important');
-            fab.style.setProperty('top', 'auto', 'important');
-        } catch (e) { /* ignore */ }
-    }
-    clampFabIntoView();
-}
-
-// 把悬浮球夹回"可见视口"（手机浏览器存在"布局视口 > 可见区域"的情况，bottom 定位会落到看不见的地方）
-function clampFabIntoView() {
-    const fab = document.getElementById('npcp_fab');
-    if (!fab) return;
-    const rect = fab.getBoundingClientRect();
-    // 没有布局信息（隐藏 / 测试环境）时不夹，避免写出错误坐标
-    if (!rect.width && !rect.height) return;
-    const vv = window.visualViewport;
-    const vw = Math.round((vv && vv.width) || window.innerWidth || 0);
-    const vh = Math.round((vv && vv.height) || window.innerHeight || 0);
-    const ox = Math.round((vv && vv.offsetLeft) || 0);
-    const oy = Math.round((vv && vv.offsetTop) || 0);
+    const p = settings().fabPos;
+    if (!p) return;
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
     if (!vw || !vh) return;
+    const rect = fab.getBoundingClientRect();
     const w = rect.width || 46, h = rect.height || 46;
-    const M = 6;
-    const wantLeft = Math.min(Math.max(ox + M, rect.left), Math.max(ox + M, ox + vw - w - M));
-    const wantTop = Math.min(Math.max(oy + M, rect.top), Math.max(oy + M, oy + vh - h - M));
-    if (Math.abs(wantLeft - rect.left) < 1 && Math.abs(wantTop - rect.top) < 1) return;
+    let left = null, top = null;
+    if (typeof p.left === 'number' && typeof p.top === 'number') {
+        left = p.left; top = p.top;
+    } else if (typeof p.right === 'number' && typeof p.bottom === 'number') {
+        // 旧版 {right, bottom} 数据换算成 left/top
+        left = vw - p.right - w;
+        top = vh - p.bottom - h;
+    }
+    if (typeof left !== 'number' || typeof top !== 'number' || !isFinite(left) || !isFinite(top)) return;
+    // 夹进布局视口：无论保存值多离谱，球都不可能被放到屏幕外
+    left = Math.min(Math.max(0, Math.round(left)), Math.max(0, vw - w));
+    top = Math.min(Math.max(0, Math.round(top)), Math.max(0, vh - h));
     try {
-        fab.style.setProperty('left', Math.round(wantLeft) + 'px', 'important');
-        fab.style.setProperty('top', Math.round(wantTop) + 'px', 'important');
         fab.style.setProperty('right', 'auto', 'important');
         fab.style.setProperty('bottom', 'auto', 'important');
+        fab.style.setProperty('left', left + 'px', 'important');
+        fab.style.setProperty('top', top + 'px', 'important');
     } catch (e) { /* ignore */ }
-    // 同步保存，避免下次 restore 又回到越界位置
-    settings().fabPos = {
-        right: Math.max(0, Math.round((window.innerWidth || vw) - (wantLeft + w))),
-        bottom: Math.max(0, Math.round((window.innerHeight || vh) - (wantTop + h))),
-    };
-    try { saveSettingsDebounced(); } catch (e) { /* ignore */ }
 }
 
 function syncSettingsUI() {
