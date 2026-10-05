@@ -210,7 +210,7 @@ const DEFAULTS = {
     template: DEFAULT_TEMPLATE,
     theme: 'night',             // 悬浮窗主题：'night' 黑夜 / 'day' 白天 / 'auto' 跟随系统
     panelPos: null,             // 悬浮窗位置 { left, top }（拖拽后记忆）
-    fabPos: null,               // 悬浮球位置 { right, bottom }（拖拽后记忆）
+    fabPos: null,               // 悬浮球位置 { left, top }（拖拽后记忆；兼容旧版 { right, bottom }，应用时自动换算）
  // 新增
     minGenTokens: 3000,         // 正文 token 防护：低于此值不生成平行视角和记忆（防道歉/审核）
     autoDetectPresence: true,   // 自动入场检测：正文结束后自动识别在场/离场人物
@@ -5740,9 +5740,11 @@ function applyFabPos() {
     if (typeof p.left === 'number' && typeof p.top === 'number') {
         left = p.left; top = p.top;
     } else if (typeof p.right === 'number' && typeof p.bottom === 'number') {
-        // 旧版 {right, bottom} 数据换算成 left/top
+        // 旧版 {right, bottom} 数据换算成 left/top（一次性迁移并落盘，之后不再随窗口尺寸漂移）
         left = vw - p.right - w;
         top = vh - p.bottom - h;
+        settings().fabPos = { left: Math.round(left), top: Math.round(top) };
+        try { saveSettingsDebounced(); } catch (e) { /* ignore */ }
     }
     if (typeof left !== 'number' || typeof top !== 'number' || !isFinite(left) || !isFinite(top)) return;
     // 夹进布局视口：无论保存值多离谱，球都不可能被放到屏幕外
