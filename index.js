@@ -384,7 +384,7 @@ function applyNpcTemplate() {
     tpl.forEach(n => {
         const nm = String(n?.name || '').trim();
         if (!nm || names.has(nm)) return;
-        cur.push({ name: nm, pov: n.pov || '', notes: n.notes || '', always: !!n.always });
+        cur.push({ name: nm, pov: n.pov || '', notes: n.notes || '', always: !!n.always, weight: num(n.weight, 1, 0, 99) });
         names.add(nm);
         added++;
     });
