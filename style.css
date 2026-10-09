@@ -8,7 +8,8 @@
 /* ============================ 设计令牌（根） ============================ */
 .npc_parallel,
 .npcp-root,
-#npcp_review_dlg {
+#npcp_review_dlg,
+#npcp_pick_dlg {
     --npcp-font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     --npcp-mono: ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
     --npcp-radius: 10px;
@@ -22,7 +23,8 @@
 /* 黑夜（默认） */
 .npc_parallel,
 .npcp-root[data-npcp-theme="night"],
-#npcp_review_dlg[data-npcp-theme="night"] {
+#npcp_review_dlg[data-npcp-theme="night"],
+#npcp_pick_dlg[data-npcp-theme="night"] {
     --npcp-bg: #2c2c2c;
     --npcp-bg-2: #242424;
     --npcp-bg-3: #383838;
@@ -43,7 +45,8 @@
 
 /* 白天 */
 .npcp-root[data-npcp-theme="day"],
-#npcp_review_dlg[data-npcp-theme="day"] {
+#npcp_review_dlg[data-npcp-theme="day"],
+#npcp_pick_dlg[data-npcp-theme="day"] {
     --npcp-bg: #ffffff;
     --npcp-bg-2: #f4f4f7;
     --npcp-bg-3: #ececf1;
@@ -476,6 +479,12 @@
 .npcp-row .npcp-always { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 0.8em; color: var(--npcp-sub); cursor: pointer; white-space: nowrap; }
 .npcp-row .npcp-del { flex-shrink: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: var(--npcp-radius-xs); cursor: pointer; color: var(--npcp-sub); transition: color var(--npcp-dur-fast) var(--npcp-ease), background var(--npcp-dur-fast) var(--npcp-ease); }
 .npcp-row .npcp-del:hover { color: #fff; background: var(--npcp-danger); }
+/* 【v1.0.8】NPC 随机权重输入 */
+.npcp-row .npcp-weight { flex: 0 0 64px; max-width: 64px; text-align: center; }
+/* 【v1.0.8】生成前选择弹窗 */
+.npcp-pick-hint { padding: 8px 14px 0; font-size: 0.78em; color: var(--npcp-sub, #a8a8b3); line-height: 1.6; }
+.npcp-review-item .npcp-pick-w { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 0.76em; color: var(--npcp-sub, #a8a8b3); white-space: nowrap; }
+.npcp-review-item .npcp-pick-weight { width: 54px; min-width: 54px; text-align: center; padding: 4px 6px; font-size: 0.95em; }
 .npcp-empty { color: var(--npcp-sub); font-size: 0.86em; line-height: 1.6; margin: 6px 2px; padding: 10px 12px; border: 1px dashed var(--npcp-line); border-radius: var(--npcp-radius-sm); }
 
 /* API 端点卡片 */

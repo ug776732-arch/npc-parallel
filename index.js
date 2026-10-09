@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.7
+// SillyTavern 前端扩展 · v1.0.8
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.7';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.8';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -237,6 +237,16 @@ const DEFAULTS = {
     ignoredNpcs: [],            // 用户明确拒绝的人物（不再作为候选提示）
     batchGenerate: true,        // 多名NPC合并成一次调用（按次计费的API很省次数）
     factsRef: true,             // 【v1.0.4】逐个生成时注入"本回合已生成角色的平行视角"作事实对齐（减少同回合跨角色矛盾）
+    // 【v1.0.8·测试版】生成前选择 / 每轮上限 / 加权随机
+    pickBeforeGen: true,        // 生成前弹出"选择本轮要生成的 NPC"（手动与自动触发都会弹）
+    pickSkip: false,            // 「不再提示」：记住后不再弹窗，直接按下面的规则自动决定
+    maxPerRound: 0,             // 每轮最多生成几个（0=不限）
+    maxPerRoundMode: 'fixed',   // fixed=固定 maxPerRound / range=在 randMin~randMax 之间随机取
+    randMin: 2,                 // 区间模式下限
+    randMax: 5,                 // 区间模式上限
+    exemptAlwaysPick: true,     // 免检角色必选（不参与随机淘汰）
+    cooldownRounds: 3,          // 随机冷却：最近 N 轮生成过的角色权重 ×0.3（0=关闭）
+    pickHistory: [],            // 最近若干轮"实际要生成"的名单（用于冷却），[[名字...], ...]
     wbMode: 'char',             // 世界书绑定方式：char=角色卡绑定 / chat=聊天绑定 / manual=手动指定 / all=全部
     wbManual: '',               // 手动指定的世界书名称
 };
@@ -2243,6 +2253,8 @@ async function retryFailedNpcs() {
 function stopGeneration() {
     if (!isRunning) return;
     cancelRequested = true;
+    // 【v1.0.8】若正在等待"生成前选择"，一并关掉弹窗（等价于"跳过本轮"）
+    try { if (pickDialogResolve) finishPick(null); } catch (e) { /* ignore */ }
     if (activeAbort) { try { activeAbort.abort(); } catch { /* ignore */ } }
     setStatus('正在停止…');
     addLog('warn', '用户手动停止了本轮补写');
@@ -2432,6 +2444,37 @@ async function runGeneration(filterNames) {
             if (s.notify) toastr.info(msg);
             return;
         }
+
+ // 【v1.0.8·测试版】生成前选择 / 每轮上限（手动与自动触发都会经过这里；
+        //「重试失败的 N 个」这类明确子集不会重复询问）
+        if (!filterNames || !filterNames.length) {
+            let pickedTargets = null;
+            try {
+                pickedTargets = await selectTargetsForRound(targets);
+            } catch (e) {
+                addLog('warn', '生成前选择出错（按原名单继续）：' + (e?.message || e));
+                pickedTargets = targets;
+            }
+            if (pickedTargets === null) {
+                setStatus('本轮已在选择弹窗中跳过');
+                addLog('info', '生成前选择：用户选择跳过本轮');
+                if (s.notify) toastr.info('已跳过本轮生成', '众生侧写');
+                return;
+            }
+            if (!pickedTargets.length) {
+                setStatus('没有勾选任何 NPC，本轮跳过生成');
+                setProgress('⏭ 未勾选任何 NPC，本轮跳过生成');
+                addLog('info', '生成前选择：未勾选任何 NPC（名单未改动）');
+                if (s.notify) toastr.info('没有勾选任何 NPC，本轮跳过生成', '众生侧写');
+                return;
+            }
+            if (pickedTargets.length !== targets.length) {
+                setProgress(`🎯 本轮生成 ${pickedTargets.length} 名（候选 ${targets.length} 名）：${pickedTargets.map(n => n.name).join('、')}`);
+            }
+            targets = pickedTargets;
+        }
+        // 记录本轮名单（冷却轮换用）
+        try { recordPickHistory(targets.map(n => n.name)); } catch (e) { /* ignore */ }
 
  // 默认「批量生成」（一次调用出所有NPC，按次计费的API很省）；
         // 解析缺的会自动回退逐个补生成。想回到逐个生成可关掉「批量生成」。
@@ -2740,6 +2783,244 @@ function renderLightApiOptions() {
 // ------------------------------ 平行视角管理面板 ------------------------------
 // 在悬浮窗内独立成栏：按楼层列出所有 NPC 平行视角正文，支持 查看 / 编辑 / 重新生成 / 删除 / 跳转 / 复制。
 // 面板内按钮不受酒馆消息区事件拦截影响，稳定可用。
+
+// ------------------------------ 生成前选择 / 每轮上限 / 加权随机（v1.0.8·测试版） ------------------------------
+// 动机：NPC 多了以后，一轮要写 N 段平行正文会很长（也更容易写不全）。
+// 提供：① 生成前弹窗手动勾选（默认全选）；② 每轮上限 + 加权随机抽取；③ 冷却轮换（最近几轮抽中过的降权）。
+
+// 本轮最多生成几个：0 = 不限
+function pickCountForRound(s) {
+    const n = Math.max(0, num(s.maxPerRound, 0, 0, 999));
+    if (n <= 0) return 0;
+    if ((s.maxPerRoundMode || 'fixed') === 'range') {
+        const lo = Math.max(1, num(s.randMin, 2, 1, 999));
+        const hi = Math.max(lo, num(s.randMax, 5, 1, 999));
+        return lo + Math.floor(Math.random() * (hi - lo + 1));
+    }
+    return n;
+}
+
+// 冷却集合：最近 K 轮"实际要生成"过的名字
+function cooldownNames(s) {
+    const set = new Set();
+    const k = Math.max(0, num(s.cooldownRounds, 3, 0, 50));
+    if (!k) return set;
+    const hist = Array.isArray(s.pickHistory) ? s.pickHistory.slice(-k) : [];
+    hist.forEach(arr => (Array.isArray(arr) ? arr : []).forEach(n => set.add(String(n).trim())));
+    return set;
+}
+
+// 单个 NPC 的抽取权重（0=不参与；冷却中 ×0.3）
+function npcPickWeight(npc, cooling) {
+    let w = num(npc && npc.weight, 1, 0, 99);
+    if (w <= 0) return 0;
+    if (cooling && cooling.has(String((npc && npc.name) || '').trim())) w *= 0.3;
+    return w;
+}
+
+// 加权无放回抽样（count<=0 或 >= 人数 → 全部返回；免检默认必选）
+function pickWeightedNpcs(items, count, s) {
+    const list = Array.isArray(items) ? items.slice() : [];
+    const n = Math.floor(num(count, 0, 0, 999));
+    if (n <= 0 || n >= list.length) return list;
+    const cooling = cooldownNames(s);
+    const out = [];
+    let rest = list.slice();
+    if (s.exemptAlwaysPick !== false) {
+        rest.filter(x => x.always).forEach(x => { if (!out.includes(x)) out.push(x); });
+        rest = rest.filter(x => !x.always);
+    }
+    while (out.length < n && rest.length) {
+        const ws = rest.map(x => npcPickWeight(x, cooling));
+        const total = ws.reduce((a, b) => a + b, 0);
+        if (total <= 0) break;                      // 全为 0 权重 → 不再抽（宁少不多）
+        let r = Math.random() * total, idx = ws.length - 1;
+        for (let i = 0; i < ws.length; i++) { r -= ws[i]; if (r <= 0) { idx = i; break; } }
+        out.push(rest[idx]);
+        rest.splice(idx, 1);
+    }
+    return out;
+}
+
+// 记录本轮名单（冷却轮换用）
+function recordPickHistory(names) {
+    try {
+        const s = settings();
+        const clean = (Array.isArray(names) ? names : []).map(n => String(n || '').trim()).filter(Boolean);
+        if (!clean.length) return;
+        const arr = Array.isArray(s.pickHistory) ? s.pickHistory.slice() : [];
+        arr.push(clean);
+        while (arr.length > 30) arr.shift();
+        s.pickHistory = arr;
+        saveSettingsDebounced();
+    } catch (e) { /* ignore */ }
+}
+
+let pickDialogResolve = null;
+
+function ensurePickDialog() {
+    let dlg = document.getElementById('npcp_pick_dlg');
+    if (!dlg) {
+        dlg = document.createElement('dialog');
+        dlg.id = 'npcp_pick_dlg';
+        dlg.className = 'npcp-review-dlg';
+        dlg.innerHTML = [
+            '<div class="npcp-review-head">',
+            '  <b>🎯 选择本轮要生成平行视角的 NPC</b>',
+            '  <span class="npcp-review-sub">默认全部勾选；不勾选的本轮不生成（不影响名单）</span>',
+            '</div>',
+            '<div class="npcp-review-body" id="npcp_pick_list"></div>',
+            '<div class="npcp-pick-hint" id="npcp_pick_hint"></div>',
+            '<div class="npcp-review-foot">',
+            '  <div class="menu_button" id="npcp_pick_all"><i class="fa-solid fa-check-double"></i><span>全选</span></div>',
+            '  <div class="menu_button" id="npcp_pick_none"><i class="fa-solid fa-xmark"></i><span>全不选</span></div>',
+            '  <div class="menu_button" id="npcp_pick_random" title="按权重随机抽取（数量=每轮上限；未设上限时抽一半）"><i class="fa-solid fa-shuffle"></i><span>随机抽</span></div>',
+            '  <div class="menu_button npcp-review-confirm" id="npcp_pick_ok"><i class="fa-solid fa-play"></i><span>开始生成</span></div>',
+            '  <div class="menu_button" id="npcp_pick_cancel"><i class="fa-solid fa-forward"></i><span>跳过本轮</span></div>',
+            '</div>',
+        ].join('');
+        document.body.appendChild(dlg);
+        dlg.addEventListener('click', (e) => {
+            const t = e.target;
+            if (t === dlg) { finishPick(null); return; }
+            if (!t || !t.closest) return;
+            if (t.closest('#npcp_pick_all')) { $('#npcp_pick_list .npcp-review-pick').prop('checked', true); updatePickHint(); }
+            else if (t.closest('#npcp_pick_none')) { $('#npcp_pick_list .npcp-review-pick').prop('checked', false); updatePickHint(); }
+            else if (t.closest('#npcp_pick_random')) { pickRandomInDialog(); }
+            else if (t.closest('#npcp_pick_ok')) { finishPick(collectPickNames()); }
+            else if (t.closest('#npcp_pick_cancel')) { finishPick(null); }
+        });
+        dlg.addEventListener('change', (e) => {
+            const t = e.target;
+            if (t && t.classList && t.classList.contains('npcp-pick-weight')) {
+                // 弹窗内临时改权重：直接落到名单数据
+                const nm = String(t.getAttribute('data-name') || '').trim();
+                const hit = (settings().npcs || []).find(x => String(x.name || '').trim() === nm);
+                if (hit) { hit.weight = num(t.value, 1, 0, 99); saveSettingsDebounced(); try { scheduleChatSave(); } catch (err) { /* ignore */ } }
+            }
+            updatePickHint();
+        });
+        dlg.addEventListener('cancel', (e) => { e.preventDefault(); finishPick(null); });   // Esc = 跳过本轮
+    }
+    try { dlg.setAttribute('data-npcp-theme', currentTheme()); } catch (e) { /* ignore */ }
+    return dlg;
+}
+
+// 打开选择窗；resolve(名字数组) 或 resolve(null)=跳过本轮
+function showPickDialog(list) {
+    return new Promise(resolve => {
+        const dlg = ensurePickDialog();
+        const cooling = cooldownNames(settings());
+        const $list = $('#npcp_pick_list');
+        $list.empty();
+        list.forEach(npc => {
+            const nm = String(npc.name || '').trim();
+            const tags = [];
+            if (npc.always) tags.push('免检');
+            if (cooling.has(nm)) tags.push('冷却中·权重降');
+            if (num(npc.weight, 1, 0, 99) <= 0) tags.push('权重0·不会被抽中');
+            $list.append([
+                '<label class="npcp-review-item" data-name="' + escapeHtml(nm) + '" data-always="' + (npc.always ? '1' : '0') + '">',
+                '  <input type="checkbox" class="npcp-review-pick" checked>',
+                '  <span class="npcp-review-info">',
+                '    <span class="npcp-review-name">' + escapeHtml(nm) + '</span>',
+                tags.length ? '    <span class="npcp-review-src">' + escapeHtml(tags.join(' · ')) + '</span>' : '',
+                '  </span>',
+                '  <span class="npcp-pick-w">权重<input class="text_pole npcp-pick-weight" type="number" min="0" max="99" step="1" data-name="' + escapeHtml(nm) + '" value="' + num(npc.weight, 1, 0, 99) + '"></span>',
+                '</label>',
+            ].join(''));
+        });
+        pickDialogResolve = resolve;
+        try {
+            if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+            else dlg.setAttribute('open', '');
+        } catch (e) { try { dlg.setAttribute('open', ''); } catch (e2) { /* ignore */ } }
+        setStatus('等待你选择本轮要生成的 NPC…');
+        setProgress('🎯 请在弹窗里确认本轮的 NPC（默认全选）');
+        updatePickHint();
+    });
+}
+
+function updatePickHint() {
+    const s = settings();
+    const total = $('#npcp_pick_list .npcp-review-item').length;
+    const picked = $('#npcp_pick_list .npcp-review-pick:checked').length;
+    const cap = pickCountForRound(s);
+    const parts = ['已勾选 ' + picked + ' / ' + total + ' 名'];
+    if (cap > 0) parts.push('每轮上限 ' + cap + (picked > cap ? '（已超过上限，仍按你勾选的执行）' : ''));
+    else parts.push('未设上限（全部生成）');
+    if (num(s.cooldownRounds, 3, 0, 50) > 0) parts.push('随机冷却 ' + num(s.cooldownRounds, 3, 0, 50) + ' 轮');
+    if (s.exemptAlwaysPick !== false) parts.push('免检角色默认必选');
+    if (s.pickSkip === true) parts.push('⚠ 已勾选「不再提示」：本轮之后将不再弹窗');
+    $('#npcp_pick_hint').text(parts.join(' · '));
+}
+
+function collectPickNames() {
+    const out = [];
+    $('#npcp_pick_list .npcp-review-item').each(function () {
+        if ($(this).find('.npcp-review-pick').prop('checked')) out.push(String($(this).attr('data-name') || '').trim());
+    });
+    return out;
+}
+
+// 弹窗内「随机抽」：按权重抽（数量=每轮上限；未设上限时抽一半），然后更新勾选
+function pickRandomInDialog() {
+    const s = settings();
+    const $items = $('#npcp_pick_list .npcp-review-item');
+    const list = [];
+    $items.each(function () {
+        list.push({
+            name: String($(this).attr('data-name') || '').trim(),
+            weight: num($(this).find('.npcp-pick-weight').val(), 1, 0, 99),
+            always: $(this).attr('data-always') === '1',
+        });
+    });
+    let n = pickCountForRound(s);
+    if (n <= 0) n = Math.max(1, Math.round(list.length / 2));
+    const chosen = pickWeightedNpcs(list, n, s).map(x => x.name);
+    $items.each(function () {
+        const nm = String($(this).attr('data-name') || '').trim();
+        $(this).find('.npcp-review-pick').prop('checked', chosen.includes(nm));
+    });
+    const skipped = list.map(x => x.name).filter(nm => !chosen.includes(nm));
+    addLog('info', `弹窗内随机抽取 ${chosen.length}/${list.length} 名：${chosen.join('、') || '无'}` + (skipped.length ? `（跳过 ${skipped.join('、')}）` : ''));
+    updatePickHint();
+}
+
+function finishPick(names) {
+    const resolve = pickDialogResolve;
+    pickDialogResolve = null;
+    const dlg = document.getElementById('npcp_pick_dlg');
+    if (dlg) {
+        try { dlg.close(); } catch (e) { try { dlg.removeAttribute('open'); } catch (e2) { /* ignore */ } }
+    }
+    if (resolve) resolve(names);
+}
+
+// 生成前决定本轮名单：
+//   ① 弹窗手动勾选（默认）；② 「不再提示」或关闭提示 → 超过上限时按权重随机抽；③ 没超上限 → 原样返回
+// 返回：数组（本轮要生成的）｜ null（用户在弹窗里选择"跳过本轮"）
+async function selectTargetsForRound(list) {
+    const s = settings();
+    if (!Array.isArray(list) || !list.length) return list;
+    const cap = pickCountForRound(s);
+    const ask = (s.pickBeforeGen !== false) && (s.pickSkip !== true);
+    if (ask) {
+        const chosen = await showPickDialog(list);
+        if (!chosen) return null;
+        const picked = list.filter(n => chosen.includes(String(n.name || '').trim()));
+        addLog('info', `生成前选择：勾选 ${picked.length}/${list.length} 名` + (picked.length ? `（${picked.map(n => n.name).join('、')}）` : ''));
+        return picked;
+    }
+    if (cap > 0 && list.length > cap) {
+        const picked = pickWeightedNpcs(list, cap, s);
+        const skipped = list.filter(n => !picked.includes(n));
+        addLog('info', `按每轮上限随机抽取 ${picked.length}/${list.length} 名：${picked.map(n => n.name).join('、')}` + (skipped.length ? `（本轮跳过 ${skipped.map(n => n.name).join('、')}）` : ''));
+        if (s.notify) toastr.info(`本轮随机生成 ${picked.length} 名（上限 ${cap}）`, '众生侧写');
+        return picked;
+    }
+    return list;
+}
 
 const POV_PANE_HTML = `
     <div class="npcp-group">
@@ -4083,6 +4364,41 @@ function addSettingsUI() {
                         <span>启用在场/离场判定（判定"在场"的NPC本轮跳过生成）</span>
                     </label>
                     <small class="npcp-hint">每轮先用一次轻量请求判断名单中谁还留在主场景；判定失败时按离场全部生成，不会卡住。NPC行内可勾选"免检"绕过判定。</small>
+                </div>
+
+                <div class="npcp-group">
+                    <b>🎯 生成前选择（测试版）</b>
+                    <label class="checkbox_label" for="npcp_pick_before">
+                        <input id="npcp_pick_before" type="checkbox">
+                        <span>生成前弹出选择窗（手动 / 自动触发都会弹）</span>
+                    </label>
+                    <label class="checkbox_label" for="npcp_pick_skip">
+                        <input id="npcp_pick_skip" type="checkbox">
+                        <span>不再提示（记住：以后直接按下面的规则自动决定；取消勾选即恢复弹窗）</span>
+                    </label>
+                    <div class="npcp-grid-row">
+                        <label>每轮最多生成（0=不限）
+                            <input id="npcp_max_round" class="text_pole" type="number" min="0" max="999" step="1">
+                        </label>
+                        <label>数量模式
+                            <select id="npcp_max_mode" class="text_pole">
+                                <option value="fixed">固定数量</option>
+                                <option value="range">随机区间</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="npcp-grid-row" id="npcp_rand_range_row">
+                        <label>区间下限<input id="npcp_rand_min" class="text_pole" type="number" min="1" max="999" step="1"></label>
+                        <label>区间上限<input id="npcp_rand_max" class="text_pole" type="number" min="1" max="999" step="1"></label>
+                    </div>
+                    <label class="checkbox_label" for="npcp_exempt_pick">
+                        <input id="npcp_exempt_pick" type="checkbox">
+                        <span>免检角色必选（不参与随机淘汰）</span>
+                    </label>
+                    <label>随机冷却轮数（最近 N 轮抽中过的角色权重 ×0.3；0=关闭）
+                        <input id="npcp_cooldown" class="text_pole" type="number" min="0" max="50" step="1">
+                    </label>
+                    <small class="npcp-hint">超过「每轮最多生成」时按<b>权重</b>随机抽取（权重在「NPC · 世界书」页每个 NPC 行内设置，默认 1；0=永不被抽中）；<b>手动勾选优先</b>——你在弹窗里勾了几个就生成几个。一轮写的人越多，平行正文越长、越容易写不全，建议按模型能力设一个上限。</small>
                 </div>
 
                 <div class="npcp-group">
@@ -5758,6 +6074,12 @@ function applyFabPos() {
     } catch (e) { /* ignore */ }
 }
 
+// 【v1.0.8】只有"随机区间"模式才显示区间输入
+function syncPickRangeRow() {
+    const mode = settings().maxPerRoundMode || 'fixed';
+    $('#npcp_rand_range_row').toggle(mode === 'range');
+}
+
 function syncSettingsUI() {
     const s = settings();
     $('#npcp_enabled').prop('checked', !!s.enabled);
@@ -5769,6 +6091,16 @@ function syncSettingsUI() {
     try { updateRetryButton(); } catch (e) { /* ignore */ }
     $('#npcp_debreak_lvl').val(s.debreakLevel || 'full');
     $('#npcp_skip_present').prop('checked', !!s.skipPresent);
+    // 【v1.0.8】生成前选择 / 每轮上限
+    $('#npcp_pick_before').prop('checked', s.pickBeforeGen !== false);
+    $('#npcp_pick_skip').prop('checked', s.pickSkip === true);
+    $('#npcp_max_round').val(num(s.maxPerRound, 0, 0, 999));
+    $('#npcp_max_mode').val(s.maxPerRoundMode || 'fixed');
+    $('#npcp_rand_min').val(num(s.randMin, 2, 1, 999));
+    $('#npcp_rand_max').val(num(s.randMax, 5, 1, 999));
+    $('#npcp_exempt_pick').prop('checked', s.exemptAlwaysPick !== false);
+    $('#npcp_cooldown').val(num(s.cooldownRounds, 3, 0, 50));
+    try { syncPickRangeRow(); } catch (e) { /* ignore */ }
     $('#npcp_person').val(s.person || 'third');
     $('#npcp_pov_custom').val(s.evolutionPovCustom || '');
     $('#npcp_pov_custom_wrap').toggle(s.person === 'custom');
@@ -5805,6 +6137,15 @@ function bindSettingsUI() {
     $('#npcp_debreak').on('change', function () { settings().debreakEnabled = $(this).prop('checked'); saveSettingsDebounced(); });
     $('#npcp_debreak_lvl').on('change', function () { settings().debreakLevel = $(this).val() || 'full'; saveSettingsDebounced(); });
     $('#npcp_skip_present').on('change', function () { settings().skipPresent = $(this).prop('checked'); saveSettingsDebounced(); });
+    // 【v1.0.8】生成前选择 / 每轮上限 / 加权随机
+    $('#npcp_pick_before').on('change', function () { settings().pickBeforeGen = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#npcp_pick_skip').on('change', function () { settings().pickSkip = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#npcp_max_round').on('input', function () { settings().maxPerRound = num($(this).val(), 0, 0, 999); saveSettingsDebounced(); });
+    $('#npcp_max_mode').on('change', function () { settings().maxPerRoundMode = $(this).val() || 'fixed'; saveSettingsDebounced(); syncPickRangeRow(); });
+    $('#npcp_rand_min').on('input', function () { settings().randMin = num($(this).val(), 2, 1, 999); saveSettingsDebounced(); });
+    $('#npcp_rand_max').on('input', function () { settings().randMax = num($(this).val(), 5, 1, 999); saveSettingsDebounced(); });
+    $('#npcp_exempt_pick').on('change', function () { settings().exemptAlwaysPick = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#npcp_cooldown').on('input', function () { settings().cooldownRounds = num($(this).val(), 3, 0, 50); saveSettingsDebounced(); });
     $('#npcp_person').on('change', function () {
         const s = settings();
         s.person = $(this).val();
@@ -5952,6 +6293,16 @@ function bindSettingsUI() {
                 try { scheduleChatSave(); } catch (e) { /* ignore */ }
             }
         })
+        .on('input change', '.npcp-row input.npcp-weight', function () {
+            // 【v1.0.8】NPC 随机权重（0=不参与随机抽取）
+            const idx = Number($(this).closest('.npcp-row').data('idx'));
+            const arr = settings().npcs;
+            if (arr && arr[idx]) {
+                arr[idx].weight = num($(this).val(), 1, 0, 99);
+                saveSettingsDebounced();
+                try { scheduleChatSave(); } catch (e) { /* ignore */ }
+            }
+        })
         .on('click', '.npcp-del', dedupe(function () {
             const idx = Number($(this).closest('.npcp-row').data('idx'));
             const arr = settings().npcs;
@@ -5975,6 +6326,7 @@ function renderNpcRows() {
             <input class="text_pole npcp-name" type="text" placeholder="NPC名字（必填）" value="${escapeHtml(npc.name || '')}">
             <input class="text_pole npcp-pov" type="text" placeholder="视角（留空=默认）" value="${escapeHtml(npc.pov || '')}">
             <input class="text_pole npcp-notes" type="text" placeholder="设定/备注（可选）" value="${escapeHtml(npc.notes || '')}">
+            <input class="text_pole npcp-weight" type="number" min="0" max="99" step="1" title="随机权重：越大越容易被抽中；0=不参与随机抽取" placeholder="权重" value="${num(npc.weight, 1, 0, 99)}">
             <label class="npcp-always" title="跳过在场/离场判定，无论是否在场都生成">
                 <input type="checkbox" ${npc.always ? 'checked' : ''}>
                 <span>免检</span>
