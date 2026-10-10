@@ -9,7 +9,8 @@
 .npc_parallel,
 .npcp-root,
 #npcp_review_dlg,
-#npcp_pick_dlg {
+#npcp_pick_dlg,
+#npcp_ignored_dlg {
     --npcp-font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     --npcp-mono: ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
     --npcp-radius: 10px;
@@ -24,7 +25,8 @@
 .npc_parallel,
 .npcp-root[data-npcp-theme="night"],
 #npcp_review_dlg[data-npcp-theme="night"],
-#npcp_pick_dlg[data-npcp-theme="night"] {
+#npcp_pick_dlg[data-npcp-theme="night"],
+#npcp_ignored_dlg[data-npcp-theme="night"] {
     --npcp-bg: #2c2c2c;
     --npcp-bg-2: #242424;
     --npcp-bg-3: #383838;
@@ -46,7 +48,8 @@
 /* 白天 */
 .npcp-root[data-npcp-theme="day"],
 #npcp_review_dlg[data-npcp-theme="day"],
-#npcp_pick_dlg[data-npcp-theme="day"] {
+#npcp_pick_dlg[data-npcp-theme="day"],
+#npcp_ignored_dlg[data-npcp-theme="day"] {
     --npcp-bg: #ffffff;
     --npcp-bg-2: #f4f4f7;
     --npcp-bg-3: #ececf1;

@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.10
+// SillyTavern 前端扩展 · v1.0.11
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.10';  // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.11';  // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -2645,6 +2645,12 @@ function updateReviewBadge() {
         $('#npcp_review_count').text(n ? `待审核人物（${n}）` : '待审核人物');
         $('#npcp_review_btn').toggleClass('npcp-has-pending', n > 0);
     } catch (e) { /* ignore */ }
+    // 【v1.0.11】忽略名单角标
+    try {
+        const m = (Array.isArray(settings().ignoredNpcs) ? settings().ignoredNpcs : []).length;
+        $('#npcp_ignored_count').text(m ? `忽略名单（${m}）` : '忽略名单');
+        $('#npcp_ignored_btn').toggleClass('npcp-has-pending', m > 0);
+    } catch (e) { /* ignore */ }
 }
 
 function ensureReviewDialog() {
@@ -2665,15 +2671,143 @@ function ensureReviewDialog() {
             '  <div class="menu_button npcp-review-confirm" id="npcp_review_ok"><i class="fa-solid fa-user-plus"></i><span>加入选中人物</span></div>',
             '  <div class="menu_button" id="npcp_review_ignore"><i class="fa-solid fa-ban"></i><span>不加入并忽略</span></div>',
             '  <div class="menu_button" id="npcp_review_later"><i class="fa-solid fa-clock"></i><span>稍后再说</span></div>',
+            '  <div class="menu_button" id="npcp_review_open_ignored" title="查看/管理忽略名单（误忽略的人物可以在这里捞回来）"><i class="fa-solid fa-ban"></i><span>忽略名单</span></div>',
             '</div>',
         ].join('');
         document.body.appendChild(dlg);
         dlg.addEventListener('click', (e) => { if (e.target === dlg) { try { dlg.close(); } catch (err) { /* ignore */ } } });
+        // 【v1.0.11】审核弹窗内直接打开忽略名单
+        dlg.addEventListener('click', (e) => {
+            if (e.target && e.target.id === 'npcp_review_open_ignored') { e.preventDefault(); openIgnoredDialog(); }
+        });
     }
     // 【v1.0.2】该弹窗挂在 <body> 下，不在 .npcp-root 作用域内 →
     // 必须自带主题标记，否则会吃到酒馆主题的样式（「白天」主题下按钮变全黑、文字看不见）。
     try { dlg.setAttribute('data-npcp-theme', currentTheme()); } catch (e) { /* ignore */ }
     return dlg;
+}
+
+// ------------------------------ 忽略名单管理（v1.0.11） ------------------------------
+// 背景：审核弹窗里点「不加入并忽略」后，人物进了 ignoredNpcs，之后识别到同名人物永远不会再提示
+// —— 没有任何 UI 能把人捞回来。这里提供：查看 / 移出（重新允许识别提示）/ 手动加进忽略。
+
+let ignoredDialogOpen = false;
+
+function ensureIgnoredDialog() {
+    let dlg = document.getElementById('npcp_ignored_dlg');
+    if (!dlg) {
+        dlg = document.createElement('dialog');
+        dlg.id = 'npcp_ignored_dlg';
+        dlg.className = 'npcp-review-dlg';
+        dlg.innerHTML = [
+            '<div class="npcp-review-head">',
+            '  <b>🚫 忽略名单（这些人物不会再作为候选提示）</b>',
+            '  <span class="npcp-review-sub">点名字右侧的 ✕ 可把人移出忽略名单（之后识别到会重新提示）；也可以在下方手动加一个名字进忽略名单。</span>',
+            '</div>',
+            '<div class="npcp-review-body" id="npcp_ignored_list"></div>',
+            '<div class="npcp-review-foot">',
+            '  <span class="npcp-inline" style="flex:1;min-width:0">',
+            '    <input id="npcp_ignored_add_name" class="text_pole" type="text" placeholder="输入名字，加进忽略名单" style="flex:1">',
+            '  </span>',
+            '  <div class="menu_button" id="npcp_ignored_add"><i class="fa-solid fa-plus"></i><span>加入忽略</span></div>',
+            '  <div class="menu_button" id="npcp_ignored_close"><i class="fa-solid fa-check"></i><span>关闭</span></div>',
+            '</div>',
+        ].join('');
+        document.body.appendChild(dlg);
+        dlg.addEventListener('click', (e) => {
+            const t = e.target;
+            if (t === dlg) { closeIgnoredDialog(); return; }
+            if (!t || !t.closest) return;
+            if (t.closest('#npcp_ignored_close')) { closeIgnoredDialog(); return; }
+            if (t.closest('#npcp_ignored_add')) { addIgnoredFromInput(); return; }
+            const del = t.closest('.npcp-ignored-del');
+            if (del) { removeIgnoredNpc(String(del.getAttribute('data-name') || '')); return; }
+        });
+        // 回车 = 加入忽略（用 e.target 判断，比 activeElement 更可靠）
+        dlg.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.target && e.target.id === 'npcp_ignored_add_name') {
+                e.preventDefault(); addIgnoredFromInput();
+            }
+        });
+        dlg.addEventListener('cancel', (e) => { e.preventDefault(); closeIgnoredDialog(); });
+    }
+    try { dlg.setAttribute('data-npcp-theme', currentTheme()); } catch (e) { /* ignore */ }
+    return dlg;
+}
+
+function renderIgnoredList() {
+    const $list = $('#npcp_ignored_list');
+    if (!$list.length) return;
+    const s = settings();
+    const arr = Array.isArray(s.ignoredNpcs) ? s.ignoredNpcs : [];
+    $list.empty();
+    if (!arr.length) {
+        $list.append('<div class="npcp-empty">（忽略名单是空的。在「待审核人物」弹窗里点「不加入并忽略」的人会出现在这里。）</div>');
+        return;
+    }
+    arr.forEach((name, i) => {
+        const nm = String(name || '').trim();
+        if (!nm) return;
+        $list.append([
+            '<label class="npcp-review-item" style="cursor:default">',
+            '  <span class="npcp-review-info">',
+            '    <span class="npcp-review-name">' + escapeHtml(nm) + '</span>',
+            '  </span>',
+            '  <span class="menu_button menu_button_icon npcp-ignored-del" data-name="' + escapeHtml(nm) + '" title="移出忽略名单（之后识别到会重新提示）" style="color:var(--npcp-danger,#e05252);flex:0 0 auto;padding:4px 10px"><i class="fa-solid fa-xmark"></i></span>',
+            '</label>',
+        ].join(''));
+    });
+}
+
+function openIgnoredDialog() {
+    const dlg = ensureIgnoredDialog();
+    renderIgnoredList();
+    try {
+        if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+        else dlg.setAttribute('open', '');
+    } catch (e) { try { dlg.setAttribute('open', ''); } catch (e2) { /* ignore */ } }
+}
+
+// 关闭忽略窗（兼容不支持 <dialog>.close() 的环境：回落到移除 open 属性）
+function closeIgnoredDialog() {
+    const d = document.getElementById('npcp_ignored_dlg');
+    if (!d) return;
+    try {
+        if (d.open && typeof d.close === 'function') d.close();
+        else d.removeAttribute('open');
+    } catch (e) { try { d.removeAttribute('open'); } catch (e2) { /* ignore */ } }
+}
+
+function removeIgnoredNpc(name) {
+    const nm = String(name || '').trim();
+    if (!nm) return;
+    const s = settings();
+    const arr = Array.isArray(s.ignoredNpcs) ? s.ignoredNpcs : [];
+    const idx = arr.indexOf(nm);
+    if (idx < 0) return;
+    arr.splice(idx, 1);
+    s.ignoredNpcs = arr;
+    saveSettingsDebounced();
+    try { scheduleChatSave(); } catch (e) { /* ignore */ }
+    renderIgnoredList();
+    addLog('ok', '已把「' + nm + '」移出忽略名单（之后识别到会重新提示）');
+    toastr.success('已移出忽略：' + nm);
+}
+
+function addIgnoredFromInput() {
+    const $in = $('#npcp_ignored_add_name');
+    const nm = String($in.val() || '').trim();
+    if (!nm) { toastr.warning('请先输入名字'); return; }
+    const s = settings();
+    const arr = Array.isArray(s.ignoredNpcs) ? s.ignoredNpcs : [];
+    if (!arr.includes(nm)) arr.push(nm);
+    s.ignoredNpcs = arr;
+    saveSettingsDebounced();
+    try { scheduleChatSave(); } catch (e) { /* ignore */ }
+    $in.val('');
+    renderIgnoredList();
+    addLog('info', '已把「' + nm + '」加入忽略名单');
+    toastr.success('已加入忽略：' + nm);
 }
 
 function renderReviewList() {
@@ -2764,7 +2898,8 @@ function bindReviewDialog() {
         .on('click.npcpReview', '#npcp_review_later', (e) => { e.preventDefault(); hideReviewDialog(); setProgress('已稍后处理，候选保留在「待审核人物」里'); })
         .on('click.npcpReview', '#npcp_review_all', (e) => { e.preventDefault(); $('#npcp_review_list .npcp-review-pick').prop('checked', true); })
         .on('click.npcpReview', '#npcp_review_none', (e) => { e.preventDefault(); $('#npcp_review_list .npcp-review-pick').prop('checked', false); })
-        .on('click.npcpReview', '#npcp_review_btn', (e) => { e.preventDefault(); e.stopPropagation(); showReviewDialog(); });
+        .on('click.npcpReview', '#npcp_review_btn', (e) => { e.preventDefault(); e.stopPropagation(); showReviewDialog(); })
+        .on('click.npcpReview', '#npcp_ignored_btn', (e) => { e.preventDefault(); e.stopPropagation(); openIgnoredDialog(); });
 }
 
 // 把端点列表填充到「轻量任务专用API」下拉
@@ -4440,6 +4575,9 @@ function addSettingsUI() {
                     <div class="npcp-buttons">
                         <div class="menu_button" id="npcp_review_btn" title="查看并审核新发现的人物">
                             <i class="fa-solid fa-user-clock"></i><span id="npcp_review_count">待审核人物</span>
+                        </div>
+                        <div class="menu_button" id="npcp_ignored_btn" title="查看/管理忽略名单：误忽略的人物可以在这里捞回来，也可以手动把某个名字加进忽略">
+                            <i class="fa-solid fa-ban"></i><span id="npcp_ignored_count">忽略名单</span>
                         </div>
                     </div>
                     <small class="npcp-hint">NPC <b>只会通过"审核确认"加入</b>：识别到的人物先进入待审核队列并弹出窗口，你可勾选加入、取消勾选跳过，或加入忽略名单（以后不再提示）。</small>
