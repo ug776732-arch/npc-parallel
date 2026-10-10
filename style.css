@@ -427,7 +427,8 @@
 .npcp-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
 .npcp-root .menu_button,
 .npcp-root #npcp_add,
-#npcp_review_dlg .menu_button {
+#npcp_review_dlg .menu_button,
+#npcp_pick_dlg .menu_button {
     display: inline-flex !important; flex-direction: row !important;
     align-items: center; justify-content: center; gap: 7px;
     white-space: nowrap;
@@ -932,6 +933,11 @@ dialog.npcp-review-dlg::backdrop { background: rgba(0, 0, 0, 0.54); }
     font-size: 0.86em;
     cursor: pointer;
     white-space: nowrap;
+    /* 【v1.0.10】酒馆全局给 .menu_button 加了 filter: grayscale(0.5)，
+       弹窗内的按钮若不关掉会被"洗灰"、颜色发虚（面板内的按钮已用 !important 关闭） */
+    filter: none;
+    backdrop-filter: none;
+    margin: 0;
 }
 .npcp-review-foot .menu_button:hover { background: var(--npcp-accent, #7c6bf0); border-color: var(--npcp-accent, #7c6bf0); color: #fff; }
 .npcp-review-foot .npcp-review-confirm {
