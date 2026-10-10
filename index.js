@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.11
+// SillyTavern 前端扩展 · v1.1.0
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.11';  // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.1.0';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -719,7 +719,8 @@ function checkTemplatePovPlaceholder() {
     if (!$w.length) return;
     const tpl = String(settings().template || '');
     const missing = !/[$]\{evolution_pov\}|\{\{evolution_pov\}\}/.test(tpl);
-    $w.toggle(missing);
+    // 【v1.1.0】用 class 控制显隐（原来 toggle 到 display:none 也 OK，但统一成 class 更稳）
+    $w.toggleClass('npcp-hidden', !missing);
     if (missing) {
         $w.html('⚠️ 当前模板里没有 <code>$&#123;evolution_pov&#125;</code> 人称占位符 —— 「叙事人称」设置写不进模板主体（插件已在提示词末尾强制追加人称规则兜底）。建议点「插入人称占位符」或「恢复默认模板」，让设置彻底生效。');
     }
@@ -4593,7 +4594,7 @@ function addSettingsUI() {
                     <b>📝 生成提示词模板</b>
                     <small class="npcp-hint">占位符：<code>$&#123;npc_name&#125; $&#123;npc_pov&#125; $&#123;npc_notes&#125; $&#123;evolution_pov&#125; $&#123;main_text&#125; $&#123;prev_npc_text&#125; $&#123;min_words&#125; $&#123;max_words&#125;</code></small>
                     <textarea id="npcp_template" class="text_pole textarea_compact" rows="12" spellcheck="false"></textarea>
-                    <div id="npcp_tpl_warn" class="npcp-hint" style="display:none"></div>
+                    <div id="npcp_tpl_warn" class="npcp-hint npcp-hidden"></div>
                     <div class="npcp-buttons">
                         <div class="menu_button" id="npcp_reset_tpl" title="恢复默认模板">
                             <i class="fa-solid fa-rotate-left"></i><span>恢复默认模板</span>
@@ -4731,7 +4732,7 @@ const WI_PANE_HTML = `
             <div class="menu_button" id="npcp_wi_test"><i class="fa-solid fa-wand-sparkles"></i><span>试算命中条目</span></div>
             <div class="menu_button" id="npcp_wi_preview"><i class="fa-solid fa-eye"></i><span>预览注入内容</span></div>
         </div>
-        <div id="npcp_wi_testout" class="npcp-hint" style="display:none"></div>
+        <div id="npcp_wi_testout" class="npcp-hint npcp-hidden"></div>
     </div>
     <div class="npcp-group">
         <b>🎛 逐条控制</b>
@@ -4855,7 +4856,7 @@ async function renderWiEntries(force) {
 async function testWiTrigger() {
     const $out = $('#npcp_wi_testout');
     if (!$out.length) return;
-    $out.show().html('正在扫描…');
+    $out.removeClass('npcp-hidden').html('正在扫描…');
     try {
         const s = settings();
         if (!(s.residentBooks || []).length) { $out.html('⚠️ 还没有勾选世界书。'); return; }
@@ -4877,7 +4878,7 @@ async function testWiTrigger() {
 async function previewWiBlock() {
     const $out = $('#npcp_wi_testout');
     if (!$out.length) return;
-    $out.show().html('正在生成预览…');
+    $out.removeClass('npcp-hidden').html('正在生成预览…');
     try {
         const { block, res } = await previewResidentWorldInfo('');
         if (!block) { $out.html('（本轮没有命中任何条目，注入内容为空）'); return; }

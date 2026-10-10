@@ -424,7 +424,19 @@
     border-left: 3px solid var(--npcp-accent);
     border-radius: 4px; padding: 7px 10px;
 }
-.npcp-root code { font-family: var(--npcp-mono); font-size: 0.9em; padding: 0 4px; border-radius: 4px; background: var(--npcp-line); word-break: break-all; }
+.npcp-root code {
+    /* 【v1.1.0】原来用 --npcp-line（边框色）做背景，浅色主题下几乎看不见 → 改成正规背景色 + 明确文字色 */
+    font-family: var(--npcp-mono);
+    font-size: 0.9em;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--npcp-bg-3);
+    border: 1px solid var(--npcp-line);
+    color: var(--npcp-accent);
+    word-break: break-all;
+}
+/* 【v1.1.0】隐藏元素统一用 class（不依赖内联 display:none，空内容绝不渲染出空虚线框） */
+.npcp-hidden { display: none !important; }
 
 /* 按钮（横向排列） */
 .npcp-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
