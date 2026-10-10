@@ -411,6 +411,8 @@
 .npcp-grid-row > label { flex: 1; min-width: 0; }
 .npcp-grid-row input[type="number"], .npcp-grid-row input[type="text"] { width: 100%; }
 .npcp-inline { display: flex; align-items: center; gap: 6px; }
+/* 【v1.0.9】平行视角文字颜色选择器 */
+.npcp-inline input[type="color"] { width: 46px; min-width: 46px; max-width: 46px; height: 34px; padding: 2px 3px; cursor: pointer; background: var(--npcp-bg-2); border: 1px solid var(--npcp-line); border-radius: var(--npcp-radius-xs); }
 
 /* 提示 */
 .npcp-hint {

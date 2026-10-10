@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.0.8
+// SillyTavern 前端扩展 · v1.0.9
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.0.8';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.0.9';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -237,6 +237,8 @@ const DEFAULTS = {
     ignoredNpcs: [],            // 用户明确拒绝的人物（不再作为候选提示）
     batchGenerate: true,        // 多名NPC合并成一次调用（按次计费的API很省次数）
     factsRef: true,             // 【v1.0.4】逐个生成时注入"本回合已生成角色的平行视角"作事实对齐（减少同回合跨角色矛盾）
+    // 【v1.0.9】平行视角文字颜色：只作用于聊天里折叠块，新旧段落都生效
+    povFontColor: '',            // '' = 跟随聊天主题；否则为 #RRGGBB
     // 【v1.0.8·测试版】生成前选择 / 每轮上限 / 加权随机
     pickBeforeGen: true,        // 生成前弹出"选择本轮要生成的 NPC"（手动与自动触发都会弹）
     pickSkip: false,            // 「不再提示」：记住后不再弹窗，直接按下面的规则自动决定
@@ -4206,7 +4208,31 @@ function applyTheme() {
     $('#npcp_floating').attr('data-npcp-theme', t);
     // 待审核弹窗挂在 body 下，主题标记要跟着一起换
     try { $('#npcp_review_dlg').attr('data-npcp-theme', t); } catch (e) { /* ignore */ }
+    try { $('#npcp_pick_dlg').attr('data-npcp-theme', t); } catch (e) { /* ignore */ }
     $('#npcp_theme').val(settings().theme || 'night');
+}
+
+// 【v1.0.9】平行视角文字颜色：注入一条全局样式（新旧折叠块都生效，不用重新生成）
+// 只认"颜色值"（#RGB/#RRGGBB/#RRGGBBAA 或 rgb()/rgba()/hsl()/hsl()），防止任意 CSS 注入
+function isValidCssColor(v) {
+    const s = String(v || '').trim().toLowerCase();
+    return /^#[0-9a-f]{3,8}$/.test(s) || /^(rgb|rgba|hsl|hsla)\([^()]{1,60}\)$/.test(s);
+}
+
+function applyPovFontColor() {
+    const el = document.getElementById('npcp_pov_color_style');
+    const c = String(settings().povFontColor || '').trim();
+    if (!c || !isValidCssColor(c)) {
+        if (el) { try { el.remove(); } catch (e) { el.textContent = ''; } }
+        return;
+    }
+    let style = el;
+    if (!style) {
+        style = document.createElement('style');
+        style.id = 'npcp_pov_color_style';
+        (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent = '#chat .npc_parallel .npcp_body, #chat .npc_parallel .npcp_name { color: ' + c + ' !important; }';
 }
 
 function addSettingsUI() {
@@ -4355,6 +4381,14 @@ function addSettingsUI() {
                     <label>正文Token防护阈值（低于此不生成；0=关闭）
                         <input id="npcp_min_tokens" class="text_pole" type="number" min="0" max="100000" step="100">
                     </label>
+                    <label>平行视角文字颜色（聊天里折叠块的字色）
+                        <span class="npcp-inline">
+                            <input id="npcp_pov_color" class="text_pole" type="color" title="只改聊天里平行视角折叠块的文字颜色；恢复默认=跟随聊天主题">
+                            <input id="npcp_pov_color_hex" class="text_pole" type="text" placeholder="#RRGGBB" style="width:110px" title="可直接粘贴十六进制色值，如 #9b8cff">
+                            <div class="menu_button" id="npcp_pov_color_reset" title="恢复默认（跟随聊天主题文字颜色）"><i class="fa-solid fa-rotate-left"></i><span>默认</span></div>
+                        </span>
+                    </label>
+                    <small class="npcp-hint">只改聊天里平行视角折叠块的<b>文字颜色</b>，新旧段落立即生效（用颜色选择器，或直接粘贴色值）；「默认」= 跟随聊天主题。</small>
                 </div>
 
                 <div class="npcp-group">
@@ -4468,6 +4502,8 @@ function addSettingsUI() {
     renderNpcRows();
     renderLogs();
     applyTheme();
+    // 【v1.0.9】应用"平行视角文字颜色"（改设置后新旧段落都生效）
+    try { applyPovFontColor(); } catch (e) { console.warn('[npcp] 平行视角字色应用失败', e); }
     try { buildPanelTabs(); } catch (e) { console.warn('[npc-parallel] 分栏构建失败（面板仍可用）', e); }
     try { bindReviewDialog(); updateReviewBadge(); } catch (e) { console.warn('[npc-parallel] 审核窗绑定失败', e); }
     bindFloating();
@@ -4937,6 +4973,19 @@ function buildScrollNav() {
 
 // ------------------------------ 添加NPC / 从世界书导入 绑定 ------------------------------
 function bindNpcSourceUI() {
+    // ⓪ 「手动添加空位」——【v1.0.9 修复】必须绑在这里：
+    // 按钮在 NPC_ADD_PANE_HTML 里，由 buildPanelTabs() 插入 DOM 后才存在；
+    // bindNpcSourceUI 在 buildPanelTabs 内、pane HTML 追加之后执行 → 绑定必然命中。
+    // （旧版绑在 bindSettingsUI，执行时机早于 buildPanelTabs → 空集合静默无效 → 点了没反应）
+    $('#npcp_add').on('click', dedupe(function () {
+        const s = settings();
+        s.npcs = Array.isArray(s.npcs) ? s.npcs : [];
+        s.npcs.push({ name: '', pov: '', notes: '', always: false, weight: 1 });
+        saveSettingsDebounced();
+        renderNpcRows();
+        $('#npcp_list .npcp-row:last .npcp-name').trigger('focus');
+    }));
+
     // ① 「调用API识别添加NPC」：读近期正文由模型识别人物；有绑定世界书时顺带读世界书，没绑定则自动跳过
     $('#npcp_api_add').on('click', dedupe(async function () {
         const $b = $(this);
@@ -6101,6 +6150,11 @@ function syncSettingsUI() {
     $('#npcp_exempt_pick').prop('checked', s.exemptAlwaysPick !== false);
     $('#npcp_cooldown').val(num(s.cooldownRounds, 3, 0, 50));
     try { syncPickRangeRow(); } catch (e) { /* ignore */ }
+    // 【v1.0.9】平行视角文字颜色
+    const povc = String(s.povFontColor || '').trim();
+    const hex6 = (h) => { const m = /^#([0-9a-fA-F]{3})$/.exec(h); return m ? '#' + [...m[1]].map(ch => ch + ch).join('') : h; };
+    $('#npcp_pov_color').val(isValidCssColor(povc) && /^#/.test(povc) ? hex6(povc) : '#b6a7ff');
+    $('#npcp_pov_color_hex').val(povc);
     $('#npcp_person').val(s.person || 'third');
     $('#npcp_pov_custom').val(s.evolutionPovCustom || '');
     $('#npcp_pov_custom_wrap').toggle(s.person === 'custom');
@@ -6172,6 +6226,30 @@ function bindSettingsUI() {
     $('#npcp_min_tokens').on('input', function () { settings().minGenTokens = num($(this).val(), 3000, 0, 100000); saveSettingsDebounced(); });
     $('#npcp_template').on('input', function () { settings().template = $(this).val(); saveSettingsDebounced(); checkTemplatePovPlaceholder(); });
     $('#npcp_theme').on('change', function () { settings().theme = $(this).val(); saveSettingsDebounced(); applyTheme(); });
+    // 【v1.0.9】平行视角文字颜色（聊天里折叠块的字色，新旧段落都生效）
+    $('#npcp_pov_color').on('input change', function () {
+        const v = String($(this).val() || '').trim();
+        if (!isValidCssColor(v)) return;
+        settings().povFontColor = v;
+        $('#npcp_pov_color_hex').val(v);
+        saveSettingsDebounced();
+        applyPovFontColor();
+    });
+    $('#npcp_pov_color_hex').on('input', function () {
+        const v = String($(this).val() || '').trim();
+        if (!isValidCssColor(v)) return;            // 不合法（如打了半个色值）先不应用
+        settings().povFontColor = v;
+        $('#npcp_pov_color').val(v);
+        saveSettingsDebounced();
+        applyPovFontColor();
+    });
+    $('#npcp_pov_color_reset').on('click', dedupe(function () {
+        settings().povFontColor = '';
+        $('#npcp_pov_color_hex').val('');
+        saveSettingsDebounced();
+        applyPovFontColor();
+        toastr.success('已恢复默认字色（跟随聊天主题）');
+    }, 300));
 
     $('#npcp_tpl_fix').on('click', dedupe(function () {
         const s = settings();
@@ -6262,14 +6340,10 @@ function bindSettingsUI() {
         setProgress('已清空本聊天的NPC名单');
         toastr.success('已清空本聊天名单');
     }, 400));
-    $('#npcp_add').on('click', dedupe(function () {
-        const s = settings();
-        s.npcs = Array.isArray(s.npcs) ? s.npcs : [];
-        s.npcs.push({ name: '', pov: '', notes: '', always: false });
-        saveSettingsDebounced();
-        renderNpcRows();
-        $('#npcp_list .npcp-row:last .npcp-name').trigger('focus');
-    }));
+    // 【v1.0.9 修复】「手动添加空位」的绑定从这里移到了 bindNpcSourceUI()：
+    // 该按钮在 NPC_ADD_PANE_HTML 里，由 buildPanelTabs() 才插入 DOM，而本函数（bindSettingsUI）
+    // 在 buildPanelTabs 之前执行 → 绑定时元素不存在 → jQuery 对空集合 .on() 静默无效
+    // → 表现为"点了没反应"。
 
     // NPC 行：文本编辑、免检勾选与删除（事件委托）
     $('#npcp_list')
