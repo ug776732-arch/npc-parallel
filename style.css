@@ -513,6 +513,7 @@
 .npcp-ep-name { flex: 1 1 auto; min-width: 90px; }
 .npcp-ep-state { flex: 0 0 auto; font-size: 0.74em; padding: 1px 7px; border-radius: 999px; white-space: nowrap; border: 1px solid var(--npcp-line); color: var(--npcp-sub); }
 .npcp-ep-state.ok { color: var(--npcp-ok); border-color: var(--npcp-ok); }
+.npcp-ep-state.off { color: var(--npcp-danger); border-color: var(--npcp-danger); opacity: .72; }
 .npcp-ep-toggle { flex: 0 0 auto; display: flex !important; flex-direction: row !important; align-items: center; gap: 5px; font-size: 0.78em; color: var(--npcp-sub); white-space: nowrap; cursor: pointer; }
 .npcp-ep-del { flex: 0 0 auto; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: var(--npcp-radius-xs); cursor: pointer; color: var(--npcp-sub); margin: 0; transition: color var(--npcp-dur-fast) var(--npcp-ease), background var(--npcp-dur-fast) var(--npcp-ease); }
 .npcp-ep-del:hover { color: #fff; background: var(--npcp-danger); }

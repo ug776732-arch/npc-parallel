@@ -1,6 +1,6 @@
 // ==========================================================================
 // 众生侧写 · 平行群像叙事（npc-parallel）
-// SillyTavern 前端扩展 · v1.1.0
+// SillyTavern 前端扩展 · v1.1.1
 // ==========================================================================
 //
 // 【做什么】
@@ -53,7 +53,7 @@ import { extension_settings, getContext } from '../../../extensions.js';
 // ------------------------------ 常量 ------------------------------
 let modelCache = [];   // 最近一次获取到的模型列表（供移动端下拉使用）
 const MODULE = 'npc_parallel';
-const NPCP_VERSION = '1.1.0';   // 面板右上角徽章显示此常量
+const NPCP_VERSION = '1.1.1';   // 面板右上角徽章显示此常量
 const LOG_KEY = 'npc_parallel_logs';
 const START_MARK = '<!--npcp:start-->';
 const END_MARK = '<!--npcp:end-->';
@@ -1298,11 +1298,13 @@ async function callEndpoint(ep, prompt, maxTokens, purpose, signal = null) {
         model: (ep.model || '').trim() || 'gpt-4o-mini',
         messages,
         stream: useStream,
-        presence_penalty: 0,
-        frequency_penalty: 0,
         max_tokens: Math.max(64, Math.floor(num(maxTokens, 1024, 64, 32000))),
         temperature: num(ep.temperature, 0.9, 0, 2),
     };
+ // 【v1.1.1】不再默认发送 presence_penalty / frequency_penalty ——
+    // 原来（v1.0.0 起）硬编码为 0 且始终发送。绝大多数端点默认值就是 0，发了没意义；
+    // 但 Claude / Gemini / Mistral 等兼容实现会对任何不认识的参数直接报 400，
+    // 这是"换个模型就老是报错"的头号根因。有需要可通过「剔除参数」手动加回。
  // 模型思考强度（reasoning_effort）——留空则不发送，由端点自身决定
     const _effort = String(ep.reasoningEffort || '').trim();
     if (_effort) body.reasoning_effort = _effort;
@@ -4501,7 +4503,9 @@ function addSettingsUI() {
                         </label>
                     </div>
                     <div class="npcp-grid-row">
-                        <label>回复Token上限<input id="npcp_tokens" class="text_pole" type="number" min="200" max="8000"></label>
+                        <label>回复Token上限（硬顶——超了截断报错；实际长度由字数区间决定）
+                            <input id="npcp_tokens" class="text_pole" type="number" min="200" max="8000">
+                        </label>
                         <label>声明强度
                             <select id="npcp_debreak_lvl" class="text_pole">
                                 <option value="full">完整（强烈，防道歉）</option>
@@ -4511,6 +4515,7 @@ function addSettingsUI() {
                         </label>
                         <label>调用间隔(ms)<input id="npcp_delay" class="text_pole" type="number" min="0" max="60000"></label>
                     </div>
+                    <small class="npcp-hint"><b>回复Token上限</b>是<b>硬上限</b>（模型输出超出即截断报错），不是目标长度——每段实际写多长由「每名字数区间」决定。批量模式总预算 = 本值 × 人数 × 0.95 + 400。想更短请调小「每名字数区间」，不是调这个。</small>
                     <label>主正文引用上限（字符，超长取结尾）
                         <input id="npcp_mainlimit" class="text_pole" type="number" min="500" max="30000">
                     </label>
