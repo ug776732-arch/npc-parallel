@@ -211,6 +211,7 @@ const DEFAULTS = {
     theme: 'night',             // 悬浮窗主题：'night' 黑夜 / 'day' 白天 / 'auto' 跟随系统
     panelPos: null,             // 悬浮窗位置 { left, top }（拖拽后记忆）
     fabPos: null,               // 悬浮球位置 { left, top }（拖拽后记忆；兼容旧版 { right, bottom }，应用时自动换算）
+    fabHidden: false,           // 【v1.1.1 热补丁】是否隐藏悬浮球；面板「显示悬浮球」开关或魔法棒菜单可恢复
  // 新增
     minGenTokens: 3000,         // 正文 token 防护：低于此值不生成平行视角和记忆（防道歉/审核）
     autoDetectPresence: true,   // 自动入场检测：正文结束后自动识别在场/离场人物
@@ -4380,6 +4381,7 @@ function addSettingsUI() {
         <div id="npcp_fab" title="众生侧写 · 设置（可拖拽）">
             <i class="fa-solid fa-wand-magic-sparkles"></i>
             <span class="npcp-fab-badge" id="npcp_fab_badge"></span>
+            <span class="npcp-fab-close" id="npcp_fab_close" title="隐藏悬浮球（可从「魔法棒」菜单恢复）"><i class="fa-solid fa-xmark"></i></span>
         </div>
         <div id="npcp_floating" class="npcp-root" data-npcp-theme="night">
             <div class="npcp-panel-head" id="npcp_drag_handle">
@@ -4395,6 +4397,7 @@ function addSettingsUI() {
                         <option value="auto">🖥 跟随系统</option>
                     </select>
                     <div class="npcp-icon-btn" id="npcp_reset_pos" title="重置位置（重新贴到悬浮球旁）"><i class="fa-solid fa-crosshairs"></i></div>
+                    <div class="npcp-icon-btn" id="npcp_hide_fab" title="隐藏悬浮球（关闭悬浮窗；可从「魔法棒」菜单恢复）"><i class="fa-solid fa-eye-slash"></i></div>
                     <div class="npcp-icon-btn" id="npcp_minimize" title="最小化"><i class="fa-solid fa-minus"></i></div>
                     <div class="npcp-icon-btn" id="npcp_close" title="关闭"><i class="fa-solid fa-xmark"></i></div>
                 </div>
@@ -4406,6 +4409,7 @@ function addSettingsUI() {
                     <label class="checkbox_label" for="npcp_auto"><input id="npcp_auto" type="checkbox"><span>AI回复后自动补写</span></label>
                     <label class="checkbox_label" for="npcp_notify"><input id="npcp_notify" type="checkbox"><span>进度提示</span></label>
                     <label class="checkbox_label" for="npcp_debreak" title="生成时注入虚构写作语境声明，降低模型道歉/拒答的概率"><input id="npcp_debreak" type="checkbox"><span>创作语境声明（防道歉）</span></label>
+                    <label class="checkbox_label" for="npcp_show_fab" title="取消勾选即隐藏悬浮球（关闭整个悬浮窗）；可从左上角「魔法棒」菜单重新勾选恢复"><input id="npcp_show_fab" type="checkbox"><span>显示悬浮球</span></label>
                 </div>
 
                 <div class="npcp-status" id="npcp_status"></div>
@@ -4654,6 +4658,8 @@ function addSettingsUI() {
     // 【v1.0.6】加载时恢复"拖拽保存的位置"（没有保存则用样式表默认），并夹进可见视口。
     // 旧逻辑在手机模式（含触摸屏笔记本窄窗口）下会强制锚定顶部 → 用户拖过的位置每次加载都被丢弃。
     try { applyFabPos(); } catch (e) { console.warn('[npcp] 悬浮球定位失败', e); }
+    // 【v1.1.1 热补丁】恢复"悬浮球已隐藏"状态（面板 UI 重建后同样生效）
+    try { applyFabHidden(); } catch (e) { console.warn('[npcp] 悬浮球显隐状态应用失败', e); }
     syncRunButton();
 }
 
@@ -5304,15 +5310,29 @@ function switchTab(tab) {
 
 // 在左下角「魔法棒」菜单（#options）中注入设置入口
 function injectMenuEntry() {
-    if ($('#npcp_menu_entry').length) return;
-    const $a = $('<a id="npcp_menu_entry" class="npcp-menu-entry"><i class="fa-lg fa-solid fa-wand-magic-sparkles"></i><span>众生侧写 · 设置</span></a>');
-    $a.on('click', (e) => {
-        e.preventDefault();
-        $('#options').hide();
-        openPanel();
-    });
     const $opts = $('#options .options-content');
-    if ($opts.length) $opts.prepend($a);
+    if (!$opts.length) return;
+    if (!$('#npcp_menu_entry').length) {
+        const $a = $('<a id="npcp_menu_entry" class="npcp-menu-entry"><i class="fa-lg fa-solid fa-wand-magic-sparkles"></i><span>众生侧写 · 设置</span></a>');
+        $a.on('click', (e) => {
+            e.preventDefault();
+            $('#options').hide();
+            openPanel();
+        });
+        $opts.prepend($a);
+    }
+    // 【v1.1.1 热补丁】悬浮球隐藏时，菜单里补一条"一键恢复"（不用先开面板）
+    if (!$('#npcp_menu_show_fab').length) {
+        const $r = $('<a id="npcp_menu_show_fab" class="npcp-menu-entry"><i class="fa-lg fa-solid fa-eye"></i><span>显示众生侧写悬浮球</span></a>');
+        $r.on('click', (e) => {
+            e.preventDefault();
+            $('#options').hide();
+            setFabHidden(false);
+        });
+        const $anchor = $('#npcp_menu_entry');
+        if ($anchor.length) $anchor.after($r); else $opts.prepend($r);
+    }
+    try { applyFabHidden(); } catch (e) { /* ignore */ }
 }
 
 // ------------------------------ 端点列表 UI ------------------------------
@@ -5919,6 +5939,21 @@ function positionPanelNearFab() {
         return;
     }
 
+    // 【v1.1.1 热补丁】悬浮球已隐藏（从魔法棒菜单打开面板）：没有可贴的参照物，改为居中显示
+    if (settings().fabHidden) {
+        panel.style.transform = 'none';
+        const pr0 = panel.getBoundingClientRect();
+        const pw0 = Math.round(pr0.width) || 500;
+        const ph0 = Math.round(pr0.height) || 600;
+        if (narrow) panel.style.width = Math.min(window.innerWidth - 16, 500) + 'px';
+        panel.style.left = Math.max(10, Math.round((window.innerWidth - pw0) / 2)) + 'px';
+        panel.style.top = Math.max(10, Math.round((window.innerHeight - ph0) / 2)) + 'px';
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        clampPanelToViewport();
+        return;
+    }
+
     // 去掉居中变换后再测量，否则量到的是缩小 6% 且带偏移的尺寸
     panel.style.transform = 'none';
     const fr = fab.getBoundingClientRect();
@@ -5993,6 +6028,41 @@ function togglePanel() {
     else openPanel();
 }
 
+// 【v1.1.1 热补丁】隐藏 / 恢复悬浮球（"关闭悬浮窗"）
+// 入口：① 悬浮球右上角小 ×  ② 面板头部眼睛图标  ③ 面板「显示悬浮球」取消勾选
+// 恢复：① 面板「显示悬浮球」重新勾选  ② 左上角魔法棒菜单「显示众生侧写悬浮球」（仅隐藏时出现）
+//      ③ 扩展设置页「打开悬浮设置窗」按钮旁边的提示文案
+// 注意：隐藏用 class（display:none!important），不动内联定位 —— 恢复后位置仍在。
+function applyFabHidden() {
+    const hidden = !!settings().fabHidden;
+    const fab = document.getElementById('npcp_fab');
+    if (fab) fab.classList.toggle('npcp-fab-hidden', hidden);
+    $('#npcp_show_fab').prop('checked', !hidden);
+    // 魔法棒菜单里的"恢复"入口只在隐藏时出现
+    const $restore = $('#npcp_menu_show_fab');
+    if ($restore.length) $restore.css('display', hidden ? '' : 'none');
+    return hidden;
+}
+
+function setFabHidden(hidden, silent) {
+    settings().fabHidden = !!hidden;
+    try { saveSettingsDebounced(); } catch (e) { /* ignore */ }
+    if (hidden) {
+        // 先关面板：hidePanelDialog 会把球从 <dialog> 搬回 body，之后隐藏才不会留在已关闭的 dialog 里
+        try { closePanel(); } catch (e) { /* ignore */ }
+    } else {
+        // 恢复后重新套用拖拽记忆的位置（隐藏期间窗口尺寸可能变过）
+        try { setTimeout(() => { try { applyFabPos(); } catch (e) { /* ignore */ } }, 0); } catch (e) { /* ignore */ }
+    }
+    applyFabHidden();
+    if (!silent) {
+        try {
+            if (hidden) toastr.info('悬浮球已隐藏；可从左上角「魔法棒」菜单或面板「显示悬浮球」恢复');
+            else toastr.success('悬浮球已恢复');
+        } catch (e) { /* ignore */ }
+    }
+}
+
 // 悬浮球 / 悬浮窗 拖拽与开合
 function bindFloating() {
     const fab = document.getElementById('npcp_fab');
@@ -6019,6 +6089,9 @@ function bindFloating() {
     // click 事件仍能开关面板；与 onTap 共用 lastFabTapTs 防抖，不会重复触发。
     if (fab) {
         $(fab).off('click.npcpFallback').on('click.npcpFallback', function (e) {
+            // 【v1.1.1 热补丁】球上"隐藏"小 × 的点击不归这里管（它自己会 stopPropagation，
+            // 但直接绑在 fab 上的处理器先于 document 代理执行，必须在这里提前放行）
+            if (e.target && e.target.closest && e.target.closest('.npcp-fab-close')) return;
             const now = Date.now();
             // 触摸产生的"幽灵 click"一律忽略（触摸链路已经处理过开关）
             if (now - lastTouchEventTs < 900) return;
@@ -6062,9 +6135,21 @@ function bindFloating() {
         });
     };
     // 控件上的触摸/鼠标按下不冒泡给拖拽处理器
-    $(document).on('mousedown touchstart', '.npcp-panel-actions, .npcp-icon-btn, .npcp-theme-select', function (e) { e.stopPropagation(); });
+    $(document).on('mousedown touchstart', '.npcp-panel-actions, .npcp-icon-btn, .npcp-theme-select, .npcp-fab-close', function (e) { e.stopPropagation(); });
     ctlTap('#npcp_close', closePanel);
     ctlTap('#npcp_minimize', closePanel);
+    // 【v1.1.1 热补丁】关闭悬浮窗：面板头部"眼睛"图标 → 隐藏悬浮球（连同面板一起关掉）
+    ctlTap('#npcp_hide_fab', () => setFabHidden(true));
+    // 球上的小 ×（document 代理，UI 重建后依然有效；makeDraggable 的 isControl 已排除它）
+    $(document).off('click.npcpFabHide', '#npcp_fab_close').on('click.npcpFabHide', '#npcp_fab_close', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setFabHidden(true);
+    });
+    // 面板「显示悬浮球」开关（取消勾选=隐藏，重新勾选=恢复）
+    $(document).off('change.npcpShowFab', '#npcp_show_fab').on('change.npcpShowFab', '#npcp_show_fab', function () {
+        setFabHidden(!this.checked);
+    });
     // 窗口尺寸变化时，若未手动拖拽过，则重新贴球
     $(window).off('resize.npcp orientationchange.npcp').on('resize.npcp orientationchange.npcp', () => {
         try { applyFabPos(); } catch (e) { /* ignore */ }
@@ -6108,7 +6193,7 @@ function makeDraggable(el, opts) {
 
     const isTouchEvt = (e) => String(e.type || '').indexOf('touch') === 0;
     const isGhostMouse = (e) => !isTouchEvt(e) && (Date.now() - lastTouchTs) < TOUCH_GUARD;
-    const isControl = (node) => !!(node && node.closest && node.closest('.npcp-panel-actions, .npcp-icon-btn, .npcp-theme-select, select, input, button, a, textarea'));
+    const isControl = (node) => !!(node && node.closest && node.closest('.npcp-panel-actions, .npcp-icon-btn, .npcp-theme-select, .npcp-fab-close, select, input, button, a, textarea'));
 
     const onDown = (e) => {
         if (isTouchEvt(e)) { lastTouchTs = Date.now(); lastTouchEventTs = lastTouchTs; }
@@ -6323,6 +6408,8 @@ function syncSettingsUI() {
     $('#npcp_auto_sync_db').prop('checked', s.autoSyncDatabase !== false);
     $('#npcp_db_entry').val(s.dbWorldEntryName || '重要人物表');
     $('#npcp_auto_presence').prop('checked', s.autoDetectPresence !== false);
+    // 【v1.1.1 热补丁】悬浮球显隐开关（默认显示）
+    $('#npcp_show_fab').prop('checked', !s.fabHidden);
  // 世界书绑定
     $('#npcp_wb_mode').val(s.wbMode || 'char');
     try { renderWorldbookOptions(); } catch (e) { console.warn('[npc-p] 世界书下拉填充失败', e); }

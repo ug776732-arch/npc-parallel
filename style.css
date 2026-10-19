@@ -172,6 +172,28 @@
 #npcp_fab.open { opacity: 1; transform: translateZ(0) scale(0.9); }
 #npcp_fab .npcp-fab-badge { display: none; }
 
+/* 【v1.1.1 热补丁】悬浮球"关闭"功能：
+   ① 球右上角的小 ×（悬停/触摸设备常显）→ 隐藏悬浮球；
+   ② 隐藏态用 display:none!important（手机媒体查询里 opacity/visibility 都是 !important，只能靠 display 压住）；
+   ③ id+class 选择器优先级高于媒体查询里的 #npcp_fab，两条都带 !important 时也能生效。 */
+#npcp_fab.npcp-fab-hidden { display: none !important; }
+.npcp-fab-close {
+    position: absolute; right: -5px; top: -5px;
+    width: 17px; height: 17px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: var(--npcp-danger, #e05a5a);
+    color: #fff;
+    font-size: 9px; line-height: 1;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    opacity: 0; transform: scale(0.8);
+    transition: opacity var(--npcp-dur-fast) var(--npcp-ease), transform var(--npcp-dur-fast) var(--npcp-ease);
+    cursor: pointer; touch-action: none; z-index: 2;
+}
+#npcp_fab:hover .npcp-fab-close { opacity: 1; transform: scale(1); }
+@media (hover: none) { #npcp_fab .npcp-fab-close { opacity: 0.92; transform: scale(1); } }
+
 /* 滚动性能 —— 阻止滚动链传导到聊天区；长列表屏外条目跳过渲染 */
 .npcp-tab-panes, .npcp-panel-body, #npcp_logbox, .npcp-mem-rounds, .npcp-ep-body {
     overscroll-behavior: contain;
